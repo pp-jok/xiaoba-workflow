@@ -61,7 +61,7 @@ Check, in order:
 1. User-provided local Lingzao path.
 2. `LINGZAO_CLIENT_PATH`.
 3. `LINGZAO_SKILL_ROOT`.
-4. Existing local directories that clearly contain Lingzao, such as `lingzao-skill-main`.
+4. Existing local directories that clearly contain Lingzao, such as the checked-in `lingzao/` directory or `lingzao-skill-main`.
 
 Do not download or install Lingzao unless the user explicitly asks and approves.
 
@@ -95,7 +95,7 @@ Run:
 ```bash
 XIAOBA_LINGZAO_PROVIDER=real \
 XIAOBA_LINGZAO_COMMAND='["python3", "scripts/lingzao_runner.py"]' \
-LINGZAO_CLIENT_PATH="/absolute/path/to/lingzao-skill-main/scripts/lingzao_client.py" \
+LINGZAO_CLIENT_PATH="20 20 12 61 79 80 81 98 701 33 100 204 250 395 398 399 400pwd)/lingzao/scripts/lingzao_client.py" \
 python3 -m xiaoba_workflow doctor --skill lingzao
 ```
 

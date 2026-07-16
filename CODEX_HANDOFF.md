@@ -40,7 +40,7 @@ export LINGZAO_API_KEY="..."
 export LINGZAO_BASE_URL="..."
 export XIAOBA_LINGZAO_PROVIDER=real
 export XIAOBA_LINGZAO_COMMAND='["python3", "scripts/lingzao_runner.py"]'
-export LINGZAO_CLIENT_PATH="/absolute/path/to/lingzao-skill-main/scripts/lingzao_client.py"
+export LINGZAO_CLIENT_PATH="20 20 12 61 79 80 81 98 701 33 100 204 250 395 398 399 400pwd)/lingzao/scripts/lingzao_client.py"
 python3 -m xiaoba_workflow doctor --skill lingzao
 ```
 

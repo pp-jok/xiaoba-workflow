@@ -1,0 +1,46 @@
+sample_id: sample-001
+
+normalization:
+  status: normalized
+  warnings: []
+
+source:
+  source_type: xhs_note
+  original_url: ""
+  canonical_url: ""
+  author: ""
+  author_id: ""
+  published_at: ""
+  captured_at: ""
+
+facts:
+  title: ""
+  body: ""
+  tags: []
+  cover: {}
+  images: []
+  transcript: ""
+
+  metrics:
+    likes:
+    saves:
+    comments:
+    shares:
+
+  comments: []
+
+basic_structure:
+  content_type: ""
+  sections: []
+  visible_cta: []
+
+coverage:
+  note_detail: available
+  comments: missing
+  transcript: missing
+  local_video: missing
+
+missing: []
+warnings: []
+
+source_paths: []

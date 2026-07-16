@@ -1,0 +1,13 @@
+task_id: task-20260715-001
+task_type: learning
+
+status: running
+current_stage: evidence_collection
+current_step: invoke_skill
+
+completed_stages: []
+
+waiting_for: null
+next_stage: evidence_normalization
+
+last_updated_at: ""

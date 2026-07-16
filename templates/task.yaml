@@ -1,0 +1,17 @@
+task_id: task-20260715-001
+task_type: learning
+
+source_type: xhs_note
+
+sources:
+  - type: url
+    value: ""
+
+goal: 持续学习并沉淀，不生成帖子
+
+requested_outputs: []
+
+generation_policy:
+  auto_generate: false
+
+created_at: ""

@@ -212,9 +212,9 @@ def build_content_package(
         "hashtags": response["hashtags"],
         "visual_plan": response["visual_suggestions"],
         "traceability": {
-            "mechanism_refs": response["mechanism_refs_used"],
-            "rule_refs": response["rule_refs_used"],
-            "asset_refs": response["asset_refs_used"],
+            "mechanism_refs": compact_refs(response["mechanism_refs_used"]),
+            "rule_refs": compact_refs(response["rule_refs_used"]),
+            "asset_refs": compact_refs(response["asset_refs_used"]),
             "learning_source_refs": response["learning_source_refs_used"],
         },
         "originality": {
@@ -260,8 +260,53 @@ def validate_content_package(
     for key in ("assumptions", "risks", "limitations", "review_questions"):
         if key not in package or not isinstance(package.get(key), list):
             raise GenerationError("content package %s must be a list" % key)
-    text = json.dumps(package, ensure_ascii=False)
-    for forbidden in (
+    reject_forbidden_content_package_fields(package)
+
+
+def validate_traceability(traceability: Dict[str, object], context: Dict[str, object]) -> None:
+    checks = (
+        ("mechanism_refs", compact_refs(context.get("mechanism_refs") or [])),
+        ("rule_refs", compact_refs(context.get("rule_refs") or [])),
+        ("asset_refs", compact_refs(context.get("asset_refs") or [])),
+        ("learning_source_refs", context.get("learning_sources") or []),
+    )
+    for key, allowed in checks:
+        refs = traceability.get(key)
+        if not isinstance(refs, list):
+            raise GenerationError("traceability %s must be a list" % key)
+        for ref in refs:
+            if ref not in allowed:
+                raise GenerationError("content package references unknown " + key)
+
+
+def compact_refs(refs: object) -> List[object]:
+    compacted: List[object] = []
+    if not isinstance(refs, list):
+        return compacted
+    for ref in refs:
+        if not isinstance(ref, dict):
+            compacted.append(ref)
+            continue
+        item: Dict[str, object] = {}
+        for key in (
+            "source_task_id",
+            "ref",
+            "rule_id",
+            "rule_version",
+            "mechanism_id",
+            "asset_id",
+            "asset_version",
+            "external_object",
+            "summary",
+        ):
+            if key in ref:
+                item[key] = ref[key]
+        compacted.append(item)
+    return compacted
+
+
+def reject_forbidden_content_package_fields(value: object) -> None:
+    forbidden_keys = {
         "auto_publish",
         "access_token",
         "platform_credentials",
@@ -272,25 +317,19 @@ def validate_content_package(
         "formal_mechanism_state",
         "RuleCard",
         "ContentAsset",
-    ):
-        if forbidden in text:
-            raise GenerationError("forbidden content package field: " + forbidden)
-
-
-def validate_traceability(traceability: Dict[str, object], context: Dict[str, object]) -> None:
-    checks = (
-        ("mechanism_refs", context.get("mechanism_refs") or []),
-        ("rule_refs", context.get("rule_refs") or []),
-        ("asset_refs", context.get("asset_refs") or []),
-        ("learning_source_refs", context.get("learning_sources") or []),
-    )
-    for key, allowed in checks:
-        refs = traceability.get(key)
-        if not isinstance(refs, list):
-            raise GenerationError("traceability %s must be a list" % key)
-        for ref in refs:
-            if ref not in allowed:
-                raise GenerationError("content package references unknown " + key)
+        "status_before_generation",
+        "lifecycle_status",
+    }
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if key in forbidden_keys:
+                raise GenerationError("forbidden content package field: " + key)
+            if key == "status" and nested in ("approved", "validated", "published"):
+                raise GenerationError("forbidden content package field: " + str(nested))
+            reject_forbidden_content_package_fields(nested)
+    elif isinstance(value, list):
+        for item in value:
+            reject_forbidden_content_package_fields(item)
 
 
 def review_content(task_dir: Path, task: Dict[str, str], state: Dict[str, object], decision: str, feedback: Optional[str]) -> Dict[str, object]:

@@ -54,8 +54,31 @@ class LearningBatchCrossSampleAggregationTests(unittest.TestCase):
             self.assertEqual(invocation["task_id"], cross["task_id"])
             self.assertEqual(cross["sample_ids"], ["sample-001", "sample-003"])
             self.assertTrue(cross["mechanism_candidates"])
+            self.assertTrue(has_chinese(cross["mechanism_candidates"][0]["name"]))
+            self.assertTrue(has_chinese(cross["mechanism_candidates"][0]["description"]))
+            self.assertTrue(all(has_chinese(item) for item in cross["rule_suggestions"]))
+            self.assertTrue(all(has_chinese(item) for item in cross["asset_suggestions"]))
+            self.assertTrue(all(has_chinese(item) for item in cross["content_opportunities"]))
             self.assertIn("current_stage: mechanism_intake", read_text(task_dir / "state.yaml"))
             self.assertFalse((task_dir / "raw/personal-content/mechanism-intake-request.json").exists())
+
+    def test_mechanism_key_groups_without_becoming_display_name(self):
+        with temp_project() as root:
+            task_dir = prepare_cross_sample_task(root, ["sample-001", "sample-003"])
+            for sample_id in ("sample-001", "sample-003"):
+                analysis_path = task_dir / ("analysis/samples/%s/analysis.yaml" % sample_id)
+                analysis = read_json(analysis_path)
+                analysis["mechanisms"][0]["mechanism_key"] = "promise_title"
+                analysis["mechanisms"][0]["name"] = "样本%s的中文展示名" % sample_id[-1]
+                write_json(analysis_path, analysis)
+
+            result = run_cli("run", str(task_dir), cwd=root)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            cross = read_json(task_dir / "analysis/cross-sample-analysis.yaml")
+            names = [item["name"] for item in cross["mechanism_candidates"]]
+            self.assertIn("样本1的中文展示名", names)
+            self.assertNotIn("promise_title", names)
 
     def test_similar_mechanisms_group_and_singletons_are_unmatched(self):
         with temp_project() as root:
@@ -64,6 +87,7 @@ class LearningBatchCrossSampleAggregationTests(unittest.TestCase):
             analysis = read_json(analysis_path)
             analysis["mechanisms"][2]["name"] = "Unique Visual Rhythm"
             analysis["mechanisms"][2]["description"] = "Only this sample shows a unique visual rhythm."
+            analysis["mechanisms"][2].pop("mechanism_key", None)
             write_json(analysis_path, analysis)
 
             result = run_cli("run", str(task_dir), cwd=root)
@@ -323,3 +347,7 @@ def read_json(path):
 
 def write_json(path, payload):
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def has_chinese(value):
+    return any("\u4e00" <= char <= "\u9fff" for char in str(value))

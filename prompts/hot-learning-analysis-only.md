@@ -23,6 +23,18 @@
 - 提出内容资产方向；
 - 提出内容机会。
 
+语言要求：
+
+- 所有面向业务的分析内容必须使用简体中文；
+- Markdown 结构标题优先使用中文，例如 `## 可观察事实`、`## 推断`、`## 内容机制`、`## 规则方向建议`；
+- 机制名称必须是中文展示名，不得输出 `Upgrade Narrative With Version Contrast`、`Content Opportunity`、`Audience Pain Point` 这类英文模板词；
+- 不得输出中英混合机制名称；
+- 专有产品名、平台名、文件路径、ID、枚举值和证据引用可以保留英文，例如 `Codex`、`Xiaohongshu`、`medium`、`evidence.yaml#facts.title`；
+- 首次出现必要英文术语时可以使用 `中文名称（English Term）`，后续只使用中文；
+- 不得为了中文化改变证据含义；
+- 不得把翻译后的推断写成事实；
+- 不得将英文模板词直接作为业务结论。
+
 禁止：
 
 - 创建正式规则；

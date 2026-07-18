@@ -11,9 +11,11 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_cli(*args, cwd):
+def run_cli(*args, cwd, env_extra=None):
     env = os.environ.copy()
     env["PYTHONPATH"] = str(PROJECT_ROOT)
+    if env_extra:
+        env.update(env_extra)
     return subprocess.run(
         [sys.executable, "-m", "xiaoba_workflow", *args],
         check=False,
@@ -115,6 +117,67 @@ class GenerationFlowTests(unittest.TestCase):
             self.assertEqual(context.returncode, 0, context.stderr)
             self.assertIn("current_stage: topic_generation", read_text(generation / "state.yaml"))
             self.assertTrue((generation / "content/generation-context.yaml").is_file())
+
+    def test_real_personal_content_generation_context_uses_only_active_rules(self):
+        with temp_project() as root:
+            generation = create_task(root, "generation", brief="围绕 Codex 自媒体提效生成选题")
+            runner = write_fake_personal_content_generation_cli(root)
+            env = {
+                "XIAOBA_PERSONAL_CONTENT_PROVIDER": "real",
+                "XIAOBA_PERSONAL_CONTENT_COMMAND": json.dumps([sys.executable, str(runner)]),
+                "XIAOBA_PERSONAL_CONTENT_WORKSPACE": str(root / "pc-workspace"),
+            }
+
+            intake = run_cli("run", str(generation), cwd=root, env_extra=env)
+            context_result = run_cli("run", str(generation), cwd=root, env_extra=env)
+            topic_result = run_cli("run", str(generation), cwd=root, env_extra=env)
+
+            self.assertEqual(intake.returncode, 0, intake.stderr)
+            self.assertEqual(context_result.returncode, 0, context_result.stderr)
+            self.assertEqual(topic_result.returncode, 0, topic_result.stderr)
+            context = read_json(generation / "content/generation-context.yaml")
+            request = read_json(generation / "raw/personal-content/generation-context-request.json")
+            response = read_json(generation / "raw/personal-content/generation-context-response.json")
+            candidates = read_json(generation / "content/topic-candidates.json")
+            self.assertEqual(request["adapter"], "real_personal_content")
+            self.assertEqual(response["operation"], "show_generation_context")
+            self.assertEqual(context["account_context"]["profile_id"], "creator-main")
+            self.assertEqual([item["rule_id"] for item in context["rule_refs"]], ["rule-approved-001"])
+            self.assertEqual(context["rule_refs"][0]["status"], "approved")
+            self.assertNotIn("rule-candidate-001", json.dumps(context))
+            self.assertEqual(candidates["candidates"][0]["rule_refs"], context["rule_refs"])
+            self.assertFalse((generation / "published").exists())
+            self.assertFalse((generation / "content/generated-post.md").exists())
+
+            calls = read_json(root / "fake-personal-content-generation-calls.json")
+            self.assertEqual(calls[0]["command"], "show-generation-context")
+            self.assertEqual(calls[0]["profile_id"], "creator-main")
+            self.assertEqual(calls[0]["intent"], "围绕 Codex 自媒体提效生成选题")
+
+    def test_content_generation_compacts_real_rule_refs_without_lifecycle_state(self):
+        with temp_project() as root:
+            generation = create_task(root, "generation", brief="围绕 Codex 自媒体提效生成选题")
+            runner = write_fake_personal_content_generation_cli(root)
+            env = {
+                "XIAOBA_PERSONAL_CONTENT_PROVIDER": "real",
+                "XIAOBA_PERSONAL_CONTENT_COMMAND": json.dumps([sys.executable, str(runner)]),
+                "XIAOBA_PERSONAL_CONTENT_WORKSPACE": str(root / "pc-workspace"),
+            }
+            self.assertEqual(run_cli("run", str(generation), cwd=root, env_extra=env).returncode, 0)
+            self.assertEqual(run_cli("run", str(generation), cwd=root, env_extra=env).returncode, 0)
+            self.assertEqual(run_cli("run", str(generation), cwd=root, env_extra=env).returncode, 0)
+            self.assertEqual(run_cli("select-topic", str(generation), "--id", "topic-001", cwd=root, env_extra=env).returncode, 0)
+
+            result = run_cli("run", str(generation), cwd=root, env_extra=env)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            package = read_json(generation / "content/content-package.yaml")
+            self.assertEqual(package["traceability"]["rule_refs"][0]["rule_id"], "rule-approved-001")
+            self.assertNotIn("status", package["traceability"]["rule_refs"][0])
+            self.assertNotIn("lifecycle_status", package["traceability"]["rule_refs"][0])
+            self.assertNotIn("approved", package["traceability"]["rule_refs"][0].values())
+            self.assertIn("current_stage: review", read_text(generation / "state.yaml"))
+            self.assertFalse((generation / "published").exists())
 
     def test_set_brief_rejects_non_generation_empty_existing_and_late_change(self):
         with temp_project() as root:
@@ -561,6 +624,73 @@ def create_task(root, task_type, source_url=None, brief=None):
         if line.startswith(prefix):
             return root / line[len(prefix) :]
     raise AssertionError(result.stdout)
+
+
+def write_fake_personal_content_generation_cli(root):
+    runner = root / "fake_personal_content_generation_cli.py"
+    calls_path = root / "fake-personal-content-generation-calls.json"
+    runner.write_text(
+        """
+import json
+import sys
+from pathlib import Path
+
+calls_path = Path("__CALLS_PATH__")
+calls = json.loads(calls_path.read_text(encoding='utf-8')) if calls_path.is_file() else []
+args = sys.argv[1:]
+if 'show-generation-context' not in args:
+    print(json.dumps({'ok': False, 'error': 'unsupported command'}))
+    sys.exit(1)
+profile_id = args[args.index('--profile-id') + 1]
+intent = args[args.index('--intent') + 1]
+calls.append({'command': 'show-generation-context', 'profile_id': profile_id, 'intent': intent})
+calls_path.write_text(json.dumps(calls, ensure_ascii=False, indent=2), encoding='utf-8')
+print(json.dumps({
+    'ok': True,
+    'result': {
+        'status_category': 'ready',
+        'profile_id': profile_id,
+        'profile_version': 1,
+        'usable_rule_count': 1,
+        'excluded_rule_count': 1,
+        'risk_warning_count': 0,
+        'missing_information_count': 0,
+        'machine_summary': {
+            'profile_id': profile_id,
+            'profile_version': 1,
+            'usable_rule_ids': ['rule-approved-001'],
+            'excluded_rule_ids': ['rule-candidate-001'],
+            'usable_rules': [
+                {
+                    'rule_id': 'rule-approved-001',
+                    'rule_version': 2,
+                    'rule_type': 'topic',
+                    'summary': '讲 AI 工具时，先翻译成目标用户的 3 个高频任务。',
+                    'status': 'approved',
+                    'strength': 'medium',
+                    'applicable_scenarios': ['小红书内容学习'],
+                    'warnings': []
+                }
+            ],
+            'excluded_rules': [
+                {
+                    'rule_id': 'rule-candidate-001',
+                    'summary': '候选规则不应进入生成上下文',
+                    'status': 'candidate',
+                    'reason': '尚未经过用户确认'
+                }
+            ],
+            'risk_warnings': [],
+            'missing_information': [],
+            'status_category': 'ready'
+        },
+        'user_summary': '已读取 1 条可用规则。'
+    }
+}, ensure_ascii=False))
+""".replace("__CALLS_PATH__", str(calls_path)),
+        encoding="utf-8",
+    )
+    return runner
 
 
 def task_id_from(task_dir):

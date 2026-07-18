@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 
 LOG_LIMIT = 64 * 1024
@@ -448,7 +449,7 @@ def adapt_external_contract(result: Dict[str, object], runner_manifest: Dict[str
         if not isinstance(note, dict):
             raise LingzaoError("contract_adaptation_error", "result.note is required")
         note_url = note.get("url") or source_url
-        if note_url != source_url:
+        if not same_source_or_canonical(str(note_url), source_url):
             raise LingzaoError("contract_adaptation_error", "note.url source mismatch")
         internal = {
             "sample_id": sample_id,
@@ -515,7 +516,32 @@ def normalize_author(value: object) -> Dict[str, object]:
 def normalize_metrics(value: object) -> Dict[str, object]:
     if not isinstance(value, dict):
         return {}
-    return dict(value)
+    aliases = {
+        "liked": "likes",
+        "like": "likes",
+        "collected": "saves",
+        "collect": "saves",
+        "commented": "comments",
+        "comment": "comments",
+        "shared": "shares",
+        "share": "shares",
+    }
+    normalized: Dict[str, object] = {}
+    for key, item in value.items():
+        target = aliases.get(str(key), str(key))
+        normalized[target] = item
+    return normalized
+
+
+def same_source_or_canonical(candidate: str, source_url: str) -> bool:
+    if candidate == source_url:
+        return True
+    return strip_query_and_fragment(candidate) == strip_query_and_fragment(source_url)
+
+
+def strip_query_and_fragment(value: str) -> str:
+    parsed = urlsplit(value)
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
 
 
 def is_valid_url(value: str) -> bool:

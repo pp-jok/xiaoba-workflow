@@ -59,7 +59,9 @@ class LearningBatchAnalysisTests(unittest.TestCase):
             invocation = read_json(task_dir / "raw/hot-learning/samples/sample-001/invocation.json")
             self.assertIn("Sample ID: sample-001", analysis_md)
             self.assertIn("Evidence reference: evidence.yaml#facts.title", analysis_md)
-            self.assertIn("Missing comments", analysis_md)
+            self.assertIn("缺失 comments", analysis_md)
+            self.assertIn("## 内容机制", analysis_md)
+            self.assertIn("通过明确承诺吸引点击", analysis_md)
             self.assertEqual(invocation["adapter"], "mock_hot_learning")
             self.assertTrue(invocation["mock"])
             self.assertEqual(invocation["sample_id"], "sample-001")
@@ -183,6 +185,19 @@ class LearningBatchAnalysisTests(unittest.TestCase):
             self.assertFalse((task_dir / "analysis/cross-sample-aggregation.json").exists())
             self.assertFalse((task_dir / "content/generated-post.md").exists())
 
+    def test_batch_analysis_package_business_content_is_chinese(self):
+        with temp_project() as root:
+            task_dir = prepare_batch_analysis_task(root, ["sample-001"])
+            run_cli("run", str(task_dir), cwd=root)
+            run_cli("run", str(task_dir), cwd=root)
+
+            analysis = read_json(task_dir / "analysis/samples/sample-001/analysis.yaml")
+
+            self.assertTrue(all(has_chinese(item["name"]) for item in analysis["mechanisms"]))
+            self.assertTrue(all(has_chinese(item) for item in analysis["rule_suggestions"]))
+            self.assertTrue(all(has_chinese(item) for item in analysis["asset_suggestions"]))
+            self.assertTrue(all(has_chinese(item) for item in analysis["content_opportunities"]))
+
 
 def prepare_batch_analysis_task(root, sample_ids):
     task_dir = create_task(root, "learning_batch", "https://example.com/user/1")
@@ -250,3 +265,7 @@ def read_json(path):
 
 def write_json(path, payload):
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def has_chinese(value):
+    return any("\u4e00" <= char <= "\u9fff" for char in str(value))

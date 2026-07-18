@@ -1,7 +1,15 @@
 .DS_Store
+.env
 .pycache/
 __pycache__/
 .pytest_cache/
 *.py[cod]
 tasks/*
 !tasks/.gitkeep
+!tasks/README.md
+
+# External Codex skills are installed locally by each user.
+lingzao/
+hot-learning/
+personal-content/
+.xhs-personal-content-skill/

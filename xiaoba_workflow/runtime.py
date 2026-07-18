@@ -1,6 +1,7 @@
 import argparse
 import json
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from datetime import datetime
@@ -82,12 +83,17 @@ def validate_project(root: Path) -> List[str]:
 
 
 def doctor(root: Path, skill: str = "lingzao") -> List[str]:
-    if skill != "lingzao":
-        raise WorkflowError("unsupported doctor skill: " + skill)
-    try:
-        return lingzao_module.doctor(root)
-    except lingzao_module.LingzaoError as error:
-        raise WorkflowError(str(error))
+    if skill == "lingzao":
+        try:
+            return lingzao_module.doctor(root)
+        except lingzao_module.LingzaoError as error:
+            raise WorkflowError(str(error))
+    if skill in ("personal-content", "personal_content"):
+        try:
+            return personal_content_module.doctor()
+        except personal_content_module.PersonalContentError as error:
+            raise WorkflowError(str(error))
+    raise WorkflowError("unsupported doctor skill: " + skill)
 
 
 def create_task(root: Path, task_type: str, source_url: Optional[str], brief: Optional[str] = None) -> Path:
@@ -663,6 +669,608 @@ def review_content(root: Path, task_dir: Path, decision: str, feedback: Optional
     return move_to_next_stage(task_dir, workflow, state)
 
 
+def prepare_governance(root: Path, task_dir: Path, profile_id: str) -> Dict[str, object]:
+    task, state = read_task_files(task_dir)
+    if task.get("task_type") != "learning":
+        raise WorkflowError("prepare-governance only supports completed learning tasks")
+    if state.get("status") != "completed":
+        raise WorkflowError("task must be completed before preparing governance")
+    if not profile_id or not profile_id.strip():
+        raise WorkflowError("profile_id is required")
+
+    evidence_path = task_dir / "evidence" / "evidence.yaml"
+    analysis_path = task_dir / "analysis" / "analysis.yaml"
+    intake_path = task_dir / "analysis" / "mechanism-intake-result.json"
+    summary_path = task_dir / "analysis" / "learning-summary.yaml"
+    plan_path = task_dir / "governance" / "personal-content-governance-plan.json"
+
+    evidence = read_json_file(evidence_path)
+    validate_evidence(evidence, evidence_path)
+    analysis = read_json_file(analysis_path)
+    analysis_module.validate_analysis(analysis, analysis_path, evidence)
+    intake_result = read_json_file(intake_path)
+    learning_summary_module.validate_intake_result(intake_result, task)
+    summary = read_json_file(summary_path)
+    learning_summary_module.validate_learning_summary(summary, summary_path, task, evidence, analysis, intake_result)
+
+    if plan_path.exists():
+        plan = read_json_file(plan_path)
+    else:
+        plan = build_governance_plan(task, profile_id.strip(), analysis, intake_result, summary)
+        write_json_atomic(plan_path, plan)
+    validate_governance_plan(plan, task, profile_id.strip(), analysis, intake_result, summary)
+    return state
+
+
+def propose_governance_rule(root: Path, task_dir: Path, proposal_id: str) -> Dict[str, object]:
+    task, state = read_task_files(task_dir)
+    if task.get("task_type") != "learning" or state.get("status") != "completed":
+        raise WorkflowError("propose-governance-rule requires a completed learning task")
+    if not proposal_id or not proposal_id.strip():
+        raise WorkflowError("proposal_id is required")
+    config = personal_content_module.provider_config()
+    if config.get("provider") != "real":
+        raise WorkflowError("propose-governance-rule requires real Personal Content provider")
+
+    evidence_path = task_dir / "evidence" / "evidence.yaml"
+    analysis_path = task_dir / "analysis" / "analysis.yaml"
+    intake_path = task_dir / "analysis" / "mechanism-intake-result.json"
+    summary_path = task_dir / "analysis" / "learning-summary.yaml"
+    plan_path = task_dir / "governance" / "personal-content-governance-plan.json"
+    if not plan_path.is_file():
+        raise WorkflowError("governance plan is missing; run prepare-governance first")
+
+    evidence = read_json_file(evidence_path)
+    validate_evidence(evidence, evidence_path)
+    analysis = read_json_file(analysis_path)
+    analysis_module.validate_analysis(analysis, analysis_path, evidence)
+    intake_result = read_json_file(intake_path)
+    learning_summary_module.validate_intake_result(intake_result, task)
+    summary = read_json_file(summary_path)
+    learning_summary_module.validate_learning_summary(summary, summary_path, task, evidence, analysis, intake_result)
+    plan = read_json_file(plan_path)
+    validate_governance_plan(plan, task, str(plan.get("profile_id") or ""), analysis, intake_result, summary)
+
+    proposal = find_governance_rule_proposal(plan, proposal_id.strip())
+    mechanism_ref = find_eligible_governance_mechanism(plan, str(proposal.get("recommended_source_mechanism_id") or ""))
+    mechanism = find_analysis_mechanism(analysis, str(mechanism_ref["source_mechanism_id"]))
+    request_path = task_dir / "governance" / (proposal_id.strip() + "-request.json")
+    response_path = task_dir / "governance" / (proposal_id.strip() + "-response.json")
+    result_path = task_dir / "governance" / (proposal_id.strip() + "-result.json")
+    existing = [path.exists() for path in (request_path, response_path, result_path)]
+    if all(existing):
+        validate_governance_rule_result(request_path, response_path, result_path, proposal_id.strip(), proposal, mechanism_ref)
+        return state
+    if request_path.exists() and not response_path.exists() and not result_path.exists():
+        request_path.unlink()
+        existing = [False, False, False]
+    if any(existing):
+        raise WorkflowError("Incomplete governance rule proposal artifacts exist")
+
+    request = build_personal_content_rule_proposal_payload(proposal, mechanism)
+    write_json_atomic(request_path, request)
+    response = run_personal_content_rule_proposal_command(request_path, proposal, mechanism_ref, plan, config)
+    write_json_atomic(response_path, response)
+    result = build_governance_rule_result(proposal, mechanism_ref, response)
+    write_json_atomic(result_path, result)
+    validate_governance_rule_result(request_path, response_path, result_path, proposal_id.strip(), proposal, mechanism_ref)
+    return state
+
+
+def confirm_governance_rule(root: Path, task_dir: Path, proposal_id: str, decision: str, note: str = "") -> Dict[str, object]:
+    task, state = read_task_files(task_dir)
+    if task.get("task_type") != "learning" or state.get("status") != "completed":
+        raise WorkflowError("confirm-governance-rule requires a completed learning task")
+    proposal_id = proposal_id.strip()
+    if not proposal_id:
+        raise WorkflowError("proposal_id is required")
+    if decision not in ("confirm", "reject"):
+        raise WorkflowError("decision must be confirm or reject")
+    config = personal_content_module.provider_config()
+    if config.get("provider") != "real":
+        raise WorkflowError("confirm-governance-rule requires real Personal Content provider")
+
+    proposal_result_path = task_dir / "governance" / (proposal_id + "-result.json")
+    if not proposal_result_path.is_file():
+        raise WorkflowError("governance rule proposal result is missing; run propose-governance-rule first")
+    proposal_result = read_json_file(proposal_result_path)
+    external_rule = proposal_result.get("external_rule") or {}
+    rule_id = str(external_rule.get("id") or "")
+    if proposal_result.get("status") != "candidate_created" or external_rule.get("status") != "candidate" or not rule_id:
+        raise WorkflowError("governance rule proposal must be a Personal Content candidate rule")
+
+    decision_response_path = task_dir / "governance" / (proposal_id + "-decision-response.json")
+    resolution_response_path = task_dir / "governance" / (proposal_id + "-confirmation-response.json")
+    result_path = task_dir / "governance" / (proposal_id + "-confirmation-result.json")
+    existing = [path.exists() for path in (decision_response_path, resolution_response_path, result_path)]
+    if all(existing):
+        validate_governance_rule_confirmation(
+            decision_response_path,
+            resolution_response_path,
+            result_path,
+            proposal_id,
+            rule_id,
+            decision,
+        )
+        return state
+    if any(existing):
+        raise WorkflowError("Incomplete governance rule confirmation artifacts exist")
+
+    decision_response = run_personal_content_create_rule_decision(rule_id, config, note)
+    decision_id = extract_personal_content_decision_id(decision_response)
+    resolution_response = run_personal_content_resolve_rule_decision(decision_id, decision, config, note)
+    result = build_governance_rule_confirmation_result(proposal_id, proposal_result, decision, decision_response, resolution_response)
+    write_json_atomic(decision_response_path, decision_response)
+    write_json_atomic(resolution_response_path, resolution_response)
+    write_json_atomic(result_path, result)
+    validate_governance_rule_confirmation(
+        decision_response_path,
+        resolution_response_path,
+        result_path,
+        proposal_id,
+        rule_id,
+        decision,
+    )
+    return state
+
+
+def find_governance_rule_proposal(plan: Dict[str, object], proposal_id: str) -> Dict[str, object]:
+    for proposal in plan.get("rule_proposals") or []:
+        if proposal.get("proposal_id") == proposal_id:
+            return proposal
+    raise WorkflowError("unknown governance rule proposal: " + proposal_id)
+
+
+def find_eligible_governance_mechanism(plan: Dict[str, object], source_mechanism_id: str) -> Dict[str, object]:
+    for item in plan.get("eligible_mechanisms") or []:
+        if item.get("source_mechanism_id") == source_mechanism_id:
+            return item
+    raise WorkflowError("governance proposal does not reference an eligible mechanism")
+
+
+def find_analysis_mechanism(analysis: Dict[str, object], mechanism_id: str) -> Dict[str, object]:
+    for mechanism in analysis.get("mechanisms") or []:
+        if isinstance(mechanism, dict) and mechanism.get("id") == mechanism_id:
+            return mechanism
+    raise WorkflowError("analysis mechanism not found: " + mechanism_id)
+
+
+def build_personal_content_rule_proposal_payload(proposal: Dict[str, object], mechanism: Dict[str, object]) -> Dict[str, object]:
+    selected = []
+    for fact in mechanism.get("observed_facts") or []:
+        if isinstance(fact, dict) and fact.get("text"):
+            selected.append(str(fact["text"]))
+        elif fact:
+            selected.append(str(fact))
+        if len(selected) == 3:
+            break
+    if not selected:
+        raise WorkflowError("governance rule proposal requires observed facts")
+    return {
+        "rule_statement": proposal["rule_statement"],
+        "rule_type": proposal.get("rule_type") or "content",
+        "applicable_scope": mechanism.get("applicable_scope") or ["小红书内容学习"],
+        "exclusions": ["不要自动批准规则", "不要生成或发布内容"],
+        "selected_observed_facts": selected,
+        "account_fit_reason": "这条候选规则来自机制描述：“%s”。该机制已进入治理计划，但仍需用户确认后才可进入正式生成上下文。" % str(mechanism.get("description") or mechanism.get("name") or ""),
+        "limitations": list(mechanism.get("limitations") or mechanism.get("missing_information") or []),
+        "risk_notes": ["候选规则只来自当前学习样本，仍需用户确认。"],
+        "examples": selected[:1],
+        "confidence_level": mechanism.get("confidence") or "medium",
+    }
+
+
+def run_personal_content_rule_proposal_command(
+    request_path: Path,
+    proposal: Dict[str, object],
+    mechanism_ref: Dict[str, object],
+    plan: Dict[str, object],
+    config: Dict[str, object],
+) -> Dict[str, object]:
+    external = mechanism_ref.get("external_object") or {}
+    mechanism_id = external.get("id")
+    if not mechanism_id:
+        raise WorkflowError("eligible mechanism requires external object id")
+    command = list(config["command"]) + [
+        "propose-rule-from-mechanism",
+        "--workspace",
+        str(config["workspace"]),
+        "--mechanism-id",
+        str(mechanism_id),
+        "--creator-id",
+        str(plan["profile_id"]),
+        "--file",
+        str(request_path),
+    ]
+    completed = subprocess.run(command, check=False, capture_output=True, text=True, shell=False)
+    output = personal_content_module.parse_json_output(completed.stdout)
+    response = {
+        "adapter": "real_personal_content",
+        "mock": False,
+        "operation": "propose_rule_from_mechanism",
+        "proposal_id": proposal["proposal_id"],
+        "workspace_ref": str(config["workspace"]),
+        "mechanism_id": str(mechanism_id),
+        "creator_id": str(plan["profile_id"]),
+        "exit_code": completed.returncode,
+        "stdout_json": output,
+        "stderr": completed.stderr.strip(),
+    }
+    if completed.returncode != 0:
+        raise WorkflowError("Personal Content propose-rule-from-mechanism failed: " + (completed.stderr.strip() or completed.stdout.strip()))
+    if not isinstance(output, dict) or not output.get("ok"):
+        raise WorkflowError("Personal Content propose-rule-from-mechanism returned invalid output")
+    return response
+
+
+def build_governance_rule_result(
+    proposal: Dict[str, object],
+    mechanism_ref: Dict[str, object],
+    response: Dict[str, object],
+) -> Dict[str, object]:
+    output = response.get("stdout_json") or {}
+    result = output.get("result") if isinstance(output, dict) else {}
+    machine = result.get("machine_summary") if isinstance(result, dict) else {}
+    rule_id = machine.get("rule_id") if isinstance(machine, dict) else None
+    rule_status = machine.get("rule_status") if isinstance(machine, dict) else None
+    created_count = result.get("created_count") if isinstance(result, dict) else 0
+    status = "candidate_created" if created_count == 1 and rule_status == "candidate" else "not_created"
+    return {
+        "proposal_id": proposal["proposal_id"],
+        "rule_statement": proposal["rule_statement"],
+        "status": status,
+        "source_mechanism_id": mechanism_ref["source_mechanism_id"],
+        "external_mechanism": mechanism_ref["external_object"],
+        "external_rule": {
+            "id": rule_id,
+            "status": rule_status,
+        },
+        "reason": result.get("user_summary") if isinstance(result, dict) else "",
+        "warnings": [],
+    }
+
+
+def validate_governance_rule_result(
+    request_path: Path,
+    response_path: Path,
+    result_path: Path,
+    proposal_id: str,
+    proposal: Dict[str, object],
+    mechanism_ref: Dict[str, object],
+) -> None:
+    request = read_json_file(request_path)
+    response = read_json_file(response_path)
+    result = read_json_file(result_path)
+    reject_governance_plan_forbidden_fields(request)
+    reject_governance_plan_forbidden_fields(result)
+    if request.get("rule_statement") != proposal.get("rule_statement"):
+        raise WorkflowError("governance rule request statement mismatch")
+    if not request.get("selected_observed_facts"):
+        raise WorkflowError("governance rule request requires observed facts")
+    if response.get("operation") != "propose_rule_from_mechanism" or response.get("proposal_id") != proposal_id:
+        raise WorkflowError("governance rule response mismatch")
+    if result.get("proposal_id") != proposal_id or result.get("source_mechanism_id") != mechanism_ref.get("source_mechanism_id"):
+        raise WorkflowError("governance rule result mismatch")
+    external_rule = result.get("external_rule") or {}
+    if result.get("status") == "candidate_created" and external_rule.get("status") != "candidate":
+        raise WorkflowError("governance rule result must remain candidate")
+
+
+def run_personal_content_create_rule_decision(rule_id: str, config: Dict[str, object], note: str) -> Dict[str, object]:
+    command = list(config["command"]) + [
+        "create-rule-decision",
+        "--workspace",
+        str(config["workspace"]),
+        "--rule-id",
+        rule_id,
+    ]
+    if note:
+        command.extend(["--user-note", note])
+    completed = subprocess.run(command, check=False, capture_output=True, text=True, shell=False)
+    response = {
+        "adapter": "real_personal_content",
+        "mock": False,
+        "operation": "create_rule_decision",
+        "workspace_ref": str(config["workspace"]),
+        "rule_id": rule_id,
+        "exit_code": completed.returncode,
+        "stdout_json": personal_content_module.parse_json_output(completed.stdout),
+        "stderr": completed.stderr.strip(),
+    }
+    if completed.returncode != 0:
+        raise WorkflowError("Personal Content create-rule-decision failed: " + (completed.stderr.strip() or completed.stdout.strip()))
+    if not isinstance(response["stdout_json"], dict) or not response["stdout_json"].get("ok"):
+        raise WorkflowError("Personal Content create-rule-decision returned invalid output")
+    return response
+
+
+def run_personal_content_resolve_rule_decision(decision_id: str, decision: str, config: Dict[str, object], note: str) -> Dict[str, object]:
+    selected_option = "确认使用" if decision == "confirm" else "暂不使用"
+    command = list(config["command"]) + [
+        "resolve-decision",
+        "--workspace",
+        str(config["workspace"]),
+        "--decision-id",
+        decision_id,
+        "--selected-option",
+        selected_option,
+    ]
+    if note:
+        command.extend(["--user-note", note])
+    completed = subprocess.run(command, check=False, capture_output=True, text=True, shell=False)
+    response = {
+        "adapter": "real_personal_content",
+        "mock": False,
+        "operation": "resolve_rule_decision",
+        "workspace_ref": str(config["workspace"]),
+        "decision_id": decision_id,
+        "selected_option": selected_option,
+        "requested_decision": decision,
+        "exit_code": completed.returncode,
+        "stdout_json": personal_content_module.parse_json_output(completed.stdout),
+        "stderr": completed.stderr.strip(),
+    }
+    if completed.returncode != 0:
+        raise WorkflowError("Personal Content resolve-decision failed: " + (completed.stderr.strip() or completed.stdout.strip()))
+    if not isinstance(response["stdout_json"], dict) or not response["stdout_json"].get("ok"):
+        raise WorkflowError("Personal Content resolve-decision returned invalid output")
+    return response
+
+
+def extract_personal_content_decision_id(response: Dict[str, object]) -> str:
+    output = response.get("stdout_json") or {}
+    result = output.get("result") if isinstance(output, dict) else {}
+    decision_id = result.get("decision_id") if isinstance(result, dict) else None
+    if not decision_id:
+        raise WorkflowError("Personal Content did not return a decision_id")
+    return str(decision_id)
+
+
+def build_governance_rule_confirmation_result(
+    proposal_id: str,
+    proposal_result: Dict[str, object],
+    decision: str,
+    decision_response: Dict[str, object],
+    resolution_response: Dict[str, object],
+) -> Dict[str, object]:
+    output = resolution_response.get("stdout_json") or {}
+    resolved = output.get("result") if isinstance(output, dict) else {}
+    changes = resolved.get("resulting_state_changes") if isinstance(resolved, dict) else []
+    external_rule = proposal_result.get("external_rule") or {}
+    status = "confirmed" if decision == "confirm" else "rejected"
+    target_status = find_resolved_rule_status(changes, str(external_rule.get("id") or ""))
+    if not target_status:
+        target_status = "approved" if decision == "confirm" else "rejected"
+    return {
+        "proposal_id": proposal_id,
+        "status": status,
+        "decision": decision,
+        "source_mechanism_id": proposal_result.get("source_mechanism_id"),
+        "external_mechanism": proposal_result.get("external_mechanism"),
+        "external_rule": {
+            "id": external_rule.get("id"),
+            "status": target_status,
+        },
+        "decision_request": {
+            "id": extract_personal_content_decision_id(decision_response),
+        },
+        "resolution": {
+            "decision_id": resolved.get("decision_id") if isinstance(resolved, dict) else None,
+            "status": resolved.get("status") if isinstance(resolved, dict) else None,
+            "selected_option": resolved.get("selected_option") if isinstance(resolved, dict) else None,
+        },
+        "generation_triggered": False,
+        "published": False,
+        "reason": resolved.get("user_summary") if isinstance(resolved, dict) else "",
+        "warnings": [],
+    }
+
+
+def find_resolved_rule_status(changes: object, rule_id: str) -> Optional[str]:
+    if not isinstance(changes, list):
+        return None
+    for change in changes:
+        if (
+            isinstance(change, dict)
+            and change.get("target_object_type") == "rule_card"
+            and change.get("target_object_id") == rule_id
+            and change.get("field") == "status"
+            and change.get("value")
+        ):
+            return str(change["value"])
+    return None
+
+
+def validate_governance_rule_confirmation(
+    decision_response_path: Path,
+    resolution_response_path: Path,
+    result_path: Path,
+    proposal_id: str,
+    rule_id: str,
+    requested_decision: str,
+) -> None:
+    decision_response = read_json_file(decision_response_path)
+    resolution_response = read_json_file(resolution_response_path)
+    result = read_json_file(result_path)
+    reject_governance_plan_forbidden_fields(result)
+    if decision_response.get("operation") != "create_rule_decision" or decision_response.get("rule_id") != rule_id:
+        raise WorkflowError("governance rule decision response mismatch")
+    if resolution_response.get("operation") != "resolve_rule_decision":
+        raise WorkflowError("governance rule resolution response mismatch")
+    if result.get("proposal_id") != proposal_id or result.get("decision") != requested_decision:
+        raise WorkflowError("governance rule confirmation result mismatch")
+    external_rule = result.get("external_rule") or {}
+    if external_rule.get("id") != rule_id:
+        raise WorkflowError("governance rule confirmation external rule mismatch")
+    expected = "approved" if requested_decision == "confirm" else "rejected"
+    expected_status = "confirmed" if requested_decision == "confirm" else "rejected"
+    if result.get("status") != expected_status or external_rule.get("status") != expected:
+        raise WorkflowError("governance rule confirmation status mismatch")
+    if result.get("generation_triggered") is not False or result.get("published") is not False:
+        raise WorkflowError("governance rule confirmation must not trigger generation or publishing")
+
+
+def build_governance_plan(
+    task: Dict[str, str],
+    profile_id: str,
+    analysis: Dict[str, object],
+    intake_result: Dict[str, object],
+    summary: Dict[str, object],
+) -> Dict[str, object]:
+    mechanism_names = {
+        str(item.get("id")): str(item.get("name") or "")
+        for item in analysis.get("mechanisms", [])
+        if isinstance(item, dict)
+    }
+    eligible = []
+    for item in intake_result.get("results", []):
+        if item.get("status") not in ("imported", "matched_existing", "limited"):
+            continue
+        external = item.get("external_object") or {}
+        source_id = str(item.get("source_mechanism_id") or "")
+        eligible.append(
+            {
+                "source_mechanism_id": source_id,
+                "mechanism_name": mechanism_names.get(source_id, ""),
+                "intake_status": item.get("status"),
+                "external_object": {
+                    "type": external.get("type"),
+                    "id": external.get("id"),
+                    "version": external.get("version"),
+                },
+            }
+        )
+    recommended_source = eligible[0]["source_mechanism_id"] if eligible else None
+    governance = summary.get("governance") or {}
+    rule_suggestions = list(governance.get("pending_rule_suggestions") or [])
+    asset_suggestions = list(governance.get("pending_asset_suggestions") or [])
+    return {
+        "task_id": task["task_id"],
+        "profile_id": profile_id,
+        "status": "pending_user_review",
+        "operation": "prepare_personal_content_governance",
+        "workspace_ref": intake_result.get("workspace_ref"),
+        "source_files": [
+            "analysis/analysis.yaml",
+            "analysis/mechanism-intake-result.json",
+            "analysis/learning-summary.yaml",
+        ],
+        "eligible_mechanisms": eligible,
+        "rule_proposals": [
+            {
+                "proposal_id": "rule-proposal-%03d" % index,
+                "rule_statement": str(suggestion),
+                "rule_type": infer_rule_type(str(suggestion)),
+                "recommended_source_mechanism_id": recommended_source,
+                "status": "needs_user_decision",
+            }
+            for index, suggestion in enumerate(rule_suggestions, start=1)
+        ],
+        "asset_direction_proposals": [
+            {
+                "proposal_id": "asset-direction-%03d" % index,
+                "asset_direction": str(suggestion),
+                "recommended_source_mechanism_id": recommended_source,
+                "status": "needs_user_proposal",
+            }
+            for index, suggestion in enumerate(asset_suggestions, start=1)
+        ],
+        "content_opportunities": list(summary.get("content_opportunities") or []),
+        "open_questions": list(summary.get("open_questions") or []),
+        "forbidden_actions": [
+            "approve rules",
+            "activate assets",
+            "create formal rule objects",
+            "create formal asset objects",
+            "generate content",
+            "publish content",
+        ],
+        "created_at": now_iso(),
+    }
+
+
+def infer_rule_type(value: str) -> str:
+    if any(token in value for token in ("安装", "耗时", "Token", "成本", "衔接", "限制")):
+        return "operation"
+    if any(token in value for token in ("标题", "选题", "场景", "用户", "任务")):
+        return "topic"
+    return "content"
+
+
+def validate_governance_plan(
+    plan: Dict[str, object],
+    task: Dict[str, str],
+    profile_id: str,
+    analysis: Dict[str, object],
+    intake_result: Dict[str, object],
+    summary: Dict[str, object],
+) -> None:
+    reject_governance_plan_forbidden_fields(plan)
+    if plan.get("task_id") != task["task_id"]:
+        raise WorkflowError("governance plan task_id mismatch")
+    if plan.get("profile_id") != profile_id:
+        raise WorkflowError("governance plan profile_id mismatch")
+    if plan.get("status") != "pending_user_review":
+        raise WorkflowError("governance plan must remain pending_user_review")
+    governance = summary.get("governance") or {}
+    if len(plan.get("rule_proposals") or []) != len(governance.get("pending_rule_suggestions") or []):
+        raise WorkflowError("governance plan rule proposal count mismatch")
+    if len(plan.get("asset_direction_proposals") or []) != len(governance.get("pending_asset_suggestions") or []):
+        raise WorkflowError("governance plan asset proposal count mismatch")
+    successful_ids = {
+        str(item.get("source_mechanism_id"))
+        for item in intake_result.get("results", [])
+        if item.get("status") in ("imported", "matched_existing", "limited")
+    }
+    analysis_ids = {str(item.get("id")) for item in analysis.get("mechanisms", []) if isinstance(item, dict)}
+    eligible_ids = []
+    for item in plan.get("eligible_mechanisms") or []:
+        source_id = str(item.get("source_mechanism_id") or "")
+        if item.get("intake_status") not in ("imported", "matched_existing", "limited"):
+            raise WorkflowError("governance plan contains ineligible mechanism")
+        external = item.get("external_object") or {}
+        if not external.get("id"):
+            raise WorkflowError("eligible mechanism requires external object id")
+        eligible_ids.append(source_id)
+    if set(eligible_ids) != successful_ids:
+        raise WorkflowError("governance plan eligible mechanisms mismatch")
+    if not set(eligible_ids).issubset(analysis_ids):
+        raise WorkflowError("governance plan references unknown mechanism")
+    for proposal in plan.get("rule_proposals") or []:
+        if proposal.get("rule_statement") not in governance.get("pending_rule_suggestions", []):
+            raise WorkflowError("governance plan rule statement mismatch")
+        if proposal.get("recommended_source_mechanism_id") not in successful_ids:
+            raise WorkflowError("governance rule proposal requires eligible mechanism")
+    for proposal in plan.get("asset_direction_proposals") or []:
+        if proposal.get("asset_direction") not in governance.get("pending_asset_suggestions", []):
+            raise WorkflowError("governance plan asset direction mismatch")
+        if proposal.get("recommended_source_mechanism_id") not in successful_ids:
+            raise WorkflowError("governance asset proposal requires eligible mechanism")
+
+
+def reject_governance_plan_forbidden_fields(value: object) -> None:
+    forbidden = {
+        "RuleCard",
+        "ContentAsset",
+        "rule_card",
+        "content_asset",
+        "generated_content",
+        "generated_post",
+        "approved",
+        "validated",
+        "active_asset",
+        "publish_task",
+    }
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if key in forbidden:
+                raise WorkflowError("forbidden governance plan field: " + key)
+            reject_governance_plan_forbidden_fields(nested)
+    elif isinstance(value, list):
+        for item in value:
+            reject_governance_plan_forbidden_fields(item)
+
+
 def get_stage_config(workflow: Dict[str, object], stage: str) -> Dict[str, object]:
     stages = workflow.get("stages", {})
     if stage not in stages:
@@ -1116,6 +1724,89 @@ def execute_learning_analysis_normalization(
         raise WorkflowError(str(error))
 
     return move_to_next_stage(task_dir, workflow, state)
+
+
+def import_hot_learning_analysis(root: Path, task_dir: Path, markdown_path: Path) -> Dict[str, object]:
+    task, state = read_task_files(task_dir)
+    workflow = get_task_workflow(load_workflows(root / "workflow.yaml"), task["task_type"])
+    get_stage_config(workflow, str(state.get("current_stage")))
+
+    if task.get("task_type") != "learning":
+        raise WorkflowError("Hot Learning analysis import only supports learning tasks")
+    if state.get("status") != "running":
+        raise WorkflowError("Task must be running to import Hot Learning analysis")
+    if state.get("current_stage") != "analysis":
+        raise WorkflowError("Hot Learning analysis can only be imported at analysis stage")
+    if not markdown_path.is_file():
+        raise FileNotFoundError("Markdown file not found: " + str(markdown_path))
+
+    evidence_path = task_dir / "evidence" / "evidence.yaml"
+    if not evidence_path.is_file():
+        raise FileNotFoundError("Missing evidence.yaml: " + str(evidence_path))
+    evidence = read_json_file(evidence_path)
+    validate_evidence(evidence, evidence_path)
+    ensure_evidence_is_analyzable(evidence)
+
+    raw_dir = task_dir / "raw" / "hot-learning"
+    analysis_path = raw_dir / "analysis.md"
+    invocation_path = raw_dir / "invocation.json"
+    if analysis_path.exists() or invocation_path.exists():
+        raise WorkflowError("raw hot-learning output already exists")
+
+    markdown = markdown_path.read_text(encoding="utf-8")
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    invocation = {
+        "adapter": "xhs_hot_learning_manual",
+        "mock": False,
+        "task_id": task.get("task_id", ""),
+        "task_type": task.get("task_type", ""),
+        "stage": state.get("current_stage", ""),
+        "sample_id": evidence.get("sample_id", ""),
+        "evidence_path": "evidence/evidence.yaml",
+        "evidence_sample_id": evidence.get("sample_id", ""),
+        "evidence_normalization_status": (evidence.get("normalization") or {}).get("status"),
+        "source_markdown": str(markdown_path),
+        "skill_path": str(Path.home() / ".codex" / "skills" / "hot-learning" / "SKILL.md"),
+        "executed_at": now_iso(),
+        "outputs": ["raw/hot-learning/analysis.md"],
+        "allowed_actions": [
+            "import raw markdown analysis",
+            "validate evidence references",
+            "preserve Hot Learning raw analysis",
+        ],
+        "forbidden_actions": [
+            "create formal rules",
+            "write analysis.yaml directly",
+            "generate formal posts",
+            "modify evidence.yaml",
+            "modify Personal Content workspace",
+            "cross-sample aggregation",
+        ],
+    }
+
+    try:
+        analysis_module.validate_markdown_evidence_refs(markdown, evidence)
+        write_text_atomic(analysis_path, markdown)
+        write_json_atomic(invocation_path, invocation)
+        normalized = analysis_module.normalize_hot_learning_analysis(task_dir, evidence)
+        if normalized["normalization"]["status"] == "normalization_failed":
+            raise WorkflowError("normalization_failed: " + "; ".join(normalized["normalization"]["warnings"]))
+    except Exception as error:
+        if analysis_path.exists():
+            analysis_path.unlink()
+        if invocation_path.exists():
+            invocation_path.unlink()
+        temp_analysis = raw_dir / ".analysis.md.tmp"
+        temp_invocation = raw_dir / ".invocation.json.tmp"
+        if temp_analysis.is_file():
+            temp_analysis.unlink()
+        if temp_invocation.is_file():
+            temp_invocation.unlink()
+        if isinstance(error, WorkflowError):
+            raise
+        raise WorkflowError(str(error))
+
+    return state
 
 
 def execute_learning_mechanism_intake(
@@ -2097,12 +2788,12 @@ def build_cross_sample_analysis(task: Dict[str, str], context: Dict[str, object]
                     "sample_id": sample_id,
                     "mechanism_id": str(mechanism.get("id", "")),
                     "analysis_ref": mechanism_analysis_ref(sample_id, index),
-                    "reason": "No deterministic match in another sample",
+                    "reason": "未在其他样本中找到确定性匹配",
                 }
             )
 
     if not candidates:
-        warnings.append("No repeated mechanism candidate found with deterministic grouping")
+        warnings.append("未通过确定性分组找到重复机制候选")
 
     return {
         "task_id": task["task_id"],
@@ -2120,6 +2811,9 @@ def build_cross_sample_analysis(task: Dict[str, str], context: Dict[str, object]
 
 
 def mechanism_group_key(mechanism: Dict[str, object]) -> str:
+    mechanism_key = str(mechanism.get("mechanism_key") or "").strip().lower()
+    if mechanism_key:
+        return "key:" + "".join(char for char in mechanism_key if char.isalnum() or char in ("_", "-"))
     name = str(mechanism.get("name") or "").lower()
     cleaned = "".join(char for char in name if char.isalnum())
     if cleaned:
@@ -2185,20 +2879,21 @@ def build_cross_sample_candidate(
                 )
         evidence = context["evidence"][sample_id]
         if (evidence.get("normalization") or {}).get("status") == "partially_normalized":
-            limitations.append({"sample_id": sample_id, "text": "Evidence is partially normalized"})
+            limitations.append({"sample_id": sample_id, "text": "该样本证据为部分标准化，结论置信度受限"})
 
     unique_descriptions = dedupe_preserving_order(descriptions)
     if len(unique_descriptions) > 1:
         for description in unique_descriptions:
             differences.append({"text": description})
     else:
-        differences.append({"text": "No major description difference detected by deterministic mock comparison"})
+        differences.append({"text": "确定性 Mock 对比未发现主要描述差异"})
 
     confidence, basis = cross_sample_confidence(supporting_samples, context, counter_evidence)
     return {
         "candidate_id": "cross-mechanism-%03d" % candidate_index,
         "name": str(first_mechanism.get("name") or ""),
-        "description": "Candidate repeated mechanism observed across samples: " + str(first_mechanism.get("description") or ""),
+        "mechanism_key": str(first_mechanism.get("mechanism_key") or mechanism_group_key(first_mechanism)),
+        "description": "跨样本重复观察到的候选机制：" + str(first_mechanism.get("description") or ""),
         "member_mechanisms": member_mechanisms,
         "supporting_samples": supporting_samples,
         "support_count": len(supporting_samples),
@@ -2220,7 +2915,7 @@ def cross_sample_confidence(
     context: Dict[str, object],
     counter_evidence: List[Dict[str, object]],
 ) -> Tuple[str, List[str]]:
-    basis = ["support_count=%d" % len(supporting_samples)]
+    basis = ["支持样本数=%d" % len(supporting_samples)]
     has_partial = False
     for sample_id in supporting_samples:
         analysis_status = ((context["analyses"][sample_id].get("normalization") or {}).get("status"))
@@ -2228,9 +2923,9 @@ def cross_sample_confidence(
         if analysis_status == "partially_normalized" or evidence_status == "partially_normalized":
             has_partial = True
     if has_partial:
-        basis.append("partial evidence or analysis limits confidence")
+        basis.append("存在部分标准化证据或分析，限制置信度")
     if counter_evidence:
-        basis.append("counter evidence prevents high confidence")
+        basis.append("存在反证，不能给高置信度")
     if len(supporting_samples) >= 3 and not has_partial and not counter_evidence:
         return "high", basis
     if len(supporting_samples) >= 2 and not counter_evidence and not has_partial:
@@ -2274,50 +2969,50 @@ def mechanism_analysis_ref(sample_id: str, mechanism_index: int) -> str:
 
 def render_cross_sample_markdown(cross: Dict[str, object], context: Dict[str, object]) -> str:
     lines = [
-        "# Mock Hot Learning Cross-Sample Raw Analysis",
+        "# Mock Hot Learning 跨样本原始分析",
         "",
-        "## Input Samples",
+        "## 输入样本",
     ]
     for sample_id in cross["sample_ids"]:
-        lines.append("- %s: analysis.yaml and evidence.yaml" % sample_id)
-    lines.extend(["", "## Per Sample Mechanism Summary"])
+        lines.append("- %s：analysis.yaml 和 evidence.yaml" % sample_id)
+    lines.extend(["", "## 单样本机制摘要"])
     for sample_id in cross["sample_ids"]:
         analysis = context["analyses"][sample_id]
         for index, mechanism in enumerate(analysis.get("mechanisms") or []):
             lines.append("- %s: analysis.yaml#mechanisms[%d] %s" % (sample_id, index, mechanism.get("name", "")))
-    lines.extend(["", "## Repeated Mechanism Candidates"])
+    lines.extend(["", "## 重复机制候选"])
     for candidate in cross["mechanism_candidates"]:
         lines.append("### %s: %s" % (candidate["candidate_id"], candidate["name"]))
-        lines.append("- Support: " + ", ".join(candidate["supporting_samples"]))
-        lines.append("- Confidence: " + candidate["confidence"])
+        lines.append("- 支持样本：" + ", ".join(candidate["supporting_samples"]))
+        lines.append("- 置信度：" + candidate["confidence"])
         for member in candidate["member_mechanisms"]:
-            lines.append("- Member: %s" % member["analysis_ref"])
+            lines.append("- 成员机制：%s" % member["analysis_ref"])
         for fact in candidate["observed_facts"][:2]:
-            lines.append("- Supporting evidence: %s: %s" % (fact["sample_id"], fact["evidence_ref"]))
+            lines.append("- 支持证据：%s: %s" % (fact["sample_id"], fact["evidence_ref"]))
         for sample_id in candidate["supporting_samples"]:
-            lines.append("- Metric reference: %s: evidence.yaml#facts.metrics.likes" % sample_id)
+            lines.append("- 指标引用：%s: evidence.yaml#facts.metrics.likes" % sample_id)
         for counter in candidate["counter_evidence"]:
-            lines.append("- Counter evidence: %s: %s" % (counter["sample_id"], counter["text"]))
+            lines.append("- 反证：%s: %s" % (counter["sample_id"], counter["text"]))
         for difference in candidate["differences"]:
-            lines.append("- Difference: " + str(difference.get("text", "")))
-        lines.append("- Merge recommendation: candidate only, not formal.")
-    lines.extend(["", "## Unmatched Mechanisms"])
+            lines.append("- 差异：" + str(difference.get("text", "")))
+        lines.append("- 合并建议：仅作为候选，不进入正式机制。")
+    lines.extend(["", "## 未匹配机制"])
     for item in cross["unmatched_mechanisms"]:
-        lines.append("- %s because %s" % (item["analysis_ref"], item["reason"]))
-    lines.extend(["", "## Rule Direction Suggestions"])
+        lines.append("- %s，原因：%s" % (item["analysis_ref"], item["reason"]))
+    lines.extend(["", "## 规则方向建议"])
     for item in cross["rule_suggestions"]:
         lines.append("- " + str(item))
-    lines.extend(["", "## Asset Direction Suggestions"])
+    lines.extend(["", "## 内容资产方向建议"])
     for item in cross["asset_suggestions"]:
         lines.append("- " + str(item))
-    lines.extend(["", "## Content Opportunities"])
+    lines.extend(["", "## 内容机会"])
     for item in cross["content_opportunities"]:
         lines.append("- " + str(item))
-    lines.extend(["", "## Missing Information And Questions"])
+    lines.extend(["", "## 缺失信息与问题"])
     for item in cross["questions"]:
         lines.append("- " + str(item))
     if not cross["questions"]:
-        lines.append("- More real samples are needed before formal mechanism merge.")
+        lines.append("- 正式合并机制前还需要更多真实样本。")
     return "\n".join(lines) + "\n"
 
 
@@ -2446,8 +3141,12 @@ def run_generation_context_assembly(
         validate_generation_context(context, task, sources)
         return "complete"
 
-    request = build_generation_context_request(task, state, brief, sources)
-    response = build_generation_context_response(request, sources)
+    config = personal_content_module.provider_config()
+    request = build_generation_context_request(task, state, brief, sources, config)
+    if config.get("provider") == "real":
+        response = run_real_generation_context_request(request, brief, config)
+    else:
+        response = build_generation_context_response(request, sources)
     context = build_generation_context(task, brief, response, sources)
     validate_generation_context(context, task, sources)
     write_json_atomic(request_path, request)
@@ -2500,14 +3199,18 @@ def build_generation_context_request(
     state: Dict[str, object],
     brief: Dict[str, object],
     sources: List[Dict[str, object]],
+    config: Optional[Dict[str, object]] = None,
 ) -> Dict[str, object]:
+    config = config or {"provider": "mock"}
+    provider = str(config.get("provider") or "mock")
     return {
-        "adapter": "mock_personal_content",
-        "mock": True,
+        "adapter": "real_personal_content" if provider == "real" else "mock_personal_content",
+        "mock": provider != "real",
         "task_id": task["task_id"],
         "stage": state.get("current_stage"),
         "operation": "assemble_generation_context",
-        "workspace_ref": personal_content_module.WORKSPACE_REF,
+        "workspace_ref": str(config.get("workspace") or personal_content_module.WORKSPACE_REF),
+        "profile_id": str(brief.get("profile_id") or "creator-main"),
         "brief": brief,
         "learning_sources": [
             {
@@ -2533,6 +3236,111 @@ def build_generation_context_request(
         ],
         "created_at": now_iso(),
     }
+
+
+def run_real_generation_context_request(
+    request: Dict[str, object],
+    brief: Dict[str, object],
+    config: Dict[str, object],
+) -> Dict[str, object]:
+    command = list(config["command"]) + [
+        "show-generation-context",
+        "--workspace",
+        str(config["workspace"]),
+        "--profile-id",
+        str(request["profile_id"]),
+        "--intent",
+        str(brief.get("request") or ""),
+        "--content-type",
+        str(brief.get("content_type") or "小红书内容"),
+        "--topic-area",
+        str(brief.get("topic_area") or ""),
+        "--format",
+        str(brief.get("format") or ""),
+        "--tone",
+        str(brief.get("tone") or ""),
+        "--length",
+        str(brief.get("length") or ""),
+    ]
+    if brief.get("target_audience"):
+        command.extend(["--target-audience", str(brief["target_audience"])])
+    for item in brief.get("constraints") or []:
+        command.extend(["--do", str(item)])
+    for item in brief.get("forbidden") or []:
+        command.extend(["--dont", str(item)])
+    completed = subprocess.run(command, check=False, capture_output=True, text=True, shell=False)
+    output = personal_content_module.parse_json_output(completed.stdout)
+    response = {
+        "adapter": "real_personal_content",
+        "mock": False,
+        "task_id": request["task_id"],
+        "operation": "show_generation_context",
+        "workspace_ref": str(config["workspace"]),
+        "profile_id": str(request["profile_id"]),
+        "exit_code": completed.returncode,
+        "stdout_json": output,
+        "stderr": completed.stderr.strip(),
+        "executed_at": now_iso(),
+    }
+    if completed.returncode != 0:
+        raise WorkflowError("Personal Content show-generation-context failed: " + (completed.stderr.strip() or completed.stdout.strip()))
+    if not isinstance(output, dict) or not output.get("ok"):
+        raise WorkflowError("Personal Content show-generation-context returned invalid output")
+    result = output.get("result")
+    if not isinstance(result, dict):
+        raise WorkflowError("Personal Content show-generation-context result is invalid")
+    machine = result.get("machine_summary")
+    if not isinstance(machine, dict):
+        raise WorkflowError("Personal Content show-generation-context missing machine_summary")
+    response["account_profile_summary"] = result.get("user_summary") or ""
+    response["generation_context_status"] = result.get("status_category")
+    response["active_rule_references"] = build_real_generation_rule_refs(machine)
+    response["excluded_rule_references"] = build_real_generation_excluded_rule_refs(machine)
+    response["prior_content_warnings"] = list(machine.get("risk_warnings") or [])
+    response["missing_information"] = list(machine.get("missing_information") or [])
+    response["originality_constraints"] = ["Use active Personal Content rules as constraints without copying source content."]
+    response["content_opportunities"] = []
+    response["open_questions"] = list(machine.get("missing_information") or [])
+    response["learning_source_references"] = request.get("learning_sources", [])
+    return response
+
+
+def build_real_generation_rule_refs(machine: Dict[str, object]) -> List[Dict[str, object]]:
+    refs = []
+    for rule in machine.get("usable_rules") or []:
+        if not isinstance(rule, dict):
+            continue
+        if rule.get("status") not in ("approved", "testing", "validated"):
+            continue
+        refs.append(
+            {
+                "rule_id": rule.get("rule_id"),
+                "rule_version": rule.get("rule_version"),
+                "rule_type": rule.get("rule_type"),
+                "summary": rule.get("summary"),
+                "status": rule.get("status"),
+                "strength": rule.get("strength"),
+                "applicable_scenarios": list(rule.get("applicable_scenarios") or []),
+                "warnings": list(rule.get("warnings") or []),
+            }
+        )
+    return refs
+
+
+def build_real_generation_excluded_rule_refs(machine: Dict[str, object]) -> List[Dict[str, object]]:
+    refs = []
+    for rule in machine.get("excluded_rules") or []:
+        if not isinstance(rule, dict):
+            continue
+        refs.append(
+            {
+                "rule_id": rule.get("rule_id"),
+                "summary": rule.get("summary"),
+                "status": rule.get("status"),
+                "reason": rule.get("reason"),
+            }
+        )
+    return refs
 
 
 def build_generation_context_response(request: Dict[str, object], sources: List[Dict[str, object]]) -> Dict[str, object]:
@@ -2570,6 +3378,7 @@ def build_generation_context_response(request: Dict[str, object], sources: List[
         "account_profile_summary": "Mock account context assembled from explicit learning sources.",
         "active_mechanism_references": mechanism_refs,
         "candidate_mechanism_references": mechanism_refs,
+        "active_rule_references": rule_refs,
         "relevant_rules": rule_refs,
         "relevant_assets": asset_refs,
         "prior_content_warnings": [],
@@ -2607,9 +3416,11 @@ def build_generation_context(
         "account_context": {
             "profile_summary": response.get("account_profile_summary", ""),
             "workspace_ref": response.get("workspace_ref", ""),
+            "profile_id": response.get("profile_id") or "creator-main",
+            "generation_context_status": response.get("generation_context_status"),
         },
         "mechanism_refs": response.get("candidate_mechanism_references", []),
-        "rule_refs": response.get("relevant_rules", []),
+        "rule_refs": response.get("active_rule_references", response.get("relevant_rules", [])),
         "asset_refs": response.get("relevant_assets", []),
         "learning_sources": [
             {
@@ -2898,12 +3709,13 @@ def normalize_lingzao_evidence_from_files(
 
     comments_status = comments.get("status") or "missing"
     transcript_status = transcript.get("status") or "missing"
-    transcript_text = transcript.get("text") if transcript_status == "available" else None
+    transcript_text = transcript.get("text") if transcript_status in ("available", "manually_provided") else None
+    transcript_source = transcript.get("source") if transcript_status == "manually_provided" else None
     if comments_status != "available":
         missing.append("comments")
-    if transcript_status != "available":
+    if transcript_status not in ("available", "manually_provided"):
         missing.append("transcript")
-    missing.append("local_video")
+    missing.append("video_file")
 
     status = "partially_normalized" if missing else "normalized"
     normalization_warnings = ["Missing " + item for item in missing]
@@ -2942,7 +3754,9 @@ def normalize_lingzao_evidence_from_files(
             "note_detail": "available",
             "comments": comments_status,
             "transcript": transcript_status,
-            "local_video": "missing",
+            "transcript_source": transcript_source,
+            "video_file": "unsupported",
+            "local_video": "unsupported",
         },
         "missing": missing,
         "warnings": normalization_warnings,
@@ -2982,7 +3796,9 @@ def failed_evidence(task: Dict[str, str], warnings: List[str], sample_id: Option
             "note_detail": "missing",
             "comments": "missing",
             "transcript": "missing",
-            "local_video": "missing",
+            "transcript_source": None,
+            "video_file": "unsupported",
+            "local_video": "unsupported",
         },
         "missing": ["note_detail"],
         "warnings": warnings,
@@ -3195,76 +4011,79 @@ def render_mock_hot_learning_markdown(evidence: Dict[str, object]) -> str:
 
     limitation_lines = []
     for item in missing:
-        limitation_lines.append("- Missing " + str(item).replace("_", " "))
-    if "local_video" in missing:
-        limitation_lines.append("- Cannot judge real video shots without local video.")
+        limitation_lines.append("- 缺失 " + str(item).replace("_", " "))
+    if "local_video" in missing or "video_file" in missing:
+        limitation_lines.append("- Lingzao 当前不提供视频文件，不能判断真实镜头。")
     if not limitation_lines:
-        limitation_lines.append("- No major limitations recorded in Evidence.")
+        limitation_lines.append("- Evidence 未记录主要缺失。")
 
-    warning_lines = ["- " + str(item) for item in warnings] or ["- None"]
+    warning_lines = ["- " + str(item) for item in warnings] or ["- 无"]
 
-    return """# Mock Hot Learning Raw Analysis
+    return """# Mock Hot Learning 原始分析
 
 Sample ID: {sample_id}
 Source URL: {url}
 
-## Observable Facts
-- Title: {title}
+## 可观察事实
+- 标题：{title}
   Evidence reference: evidence.yaml#facts.title
-- Body summary: {body}
+- 正文摘要：{body}
   Evidence reference: evidence.yaml#facts.body
-- Author: {author}
+- 作者：{author}
   Evidence reference: evidence.yaml#source.author
-- Metrics: likes={likes}, saves={saves}, comments={comments}, shares={shares}
+- 指标：likes={likes}, saves={saves}, comments={comments}, shares={shares}
   Evidence reference: evidence.yaml#facts.metrics
 
-## Inferences
-- The note likely relies on a clear promise in the title.
-- The body supports the promise with compact explanatory detail.
-- Current engagement metrics suggest the structure is worth studying, but causality is not proven.
+## 推断
+- 这篇笔记可能依赖标题中的明确承诺来降低点击决策成本。
+- 正文用紧凑信息支撑标题承诺，让用户更容易判断内容是否值得继续看。
+- 当前互动指标只能说明样本值得观察，不能证明结构与表现之间存在因果关系。
 
-## Content Mechanisms
-### Mechanism 1: Specific Promise Title
-- Description: The title packages the benefit into a direct promise.
-- Evidence: evidence.yaml#facts.title
-- Confidence: medium
-- Alternative explanation: Performance may depend on creator trust or distribution timing.
+## 内容机制
+### 机制 1：通过明确承诺吸引点击
+- 机制 key：specific_promise_title
+- 描述：标题把用户能获得的好处包装成直接承诺，降低用户理解成本。
+- 证据：evidence.yaml#facts.title
+- 置信度：medium
+- 替代解释：表现也可能依赖作者信任或平台分发时机。
 
-### Mechanism 2: Compact Evidence Body
-- Description: The body gives enough concrete context to support the promise without overloading the reader.
-- Evidence: evidence.yaml#facts.body
-- Confidence: medium
-- Alternative explanation: The topic may already be high-demand regardless of structure.
+### 机制 2：用紧凑正文支撑承诺
+- 机制 key：compact_evidence_body
+- 描述：正文提供足够具体的上下文来支撑标题承诺，同时避免信息负担过重。
+- 证据：evidence.yaml#facts.body
+- 置信度：medium
+- 替代解释：主题本身可能已经有需求，结构不是唯一原因。
 
-### Mechanism 3: Low-Friction Visual Support
-- Description: Images appear available as supporting assets, but the mock evidence does not prove visual sequencing.
-- Evidence: evidence.yaml#facts.images
-- Confidence: low
-- Alternative explanation: Visual impact cannot be verified without richer image analysis.
+### 机制 3：用可见素材降低理解摩擦
+- 机制 key：low_friction_visual_support
+- 描述：图片可以作为辅助素材，但当前证据不能证明真实视觉顺序或镜头节奏。
+- 证据：evidence.yaml#facts.images
+- 置信度：low
+- 替代解释：缺少更完整的图片或视频证据时，视觉影响无法确认。
 
-## Learnable Parts
-- Clear promise framing.
-- Compact supporting body structure.
-- Separating observable facts from transfer suggestions.
+## 可学习部分
+- 用明确承诺帮助用户快速判断内容价值。
+- 用紧凑正文支撑标题，不让标题显得空泛。
+- 分开保存可观察事实、推断和迁移建议。
 
-## Not Copyable Parts
-- Do not copy title wording directly.
-- Do not invent personal experience or results.
-- Do not assume comments or transcript patterns when they are missing.
+## 不可照搬部分
+- 不直接复制标题表述。
+- 不编造自己的经验、结果或案例。
+- 评论、逐字稿缺失时，不推断评论需求或口播结构。
 
-## Rule Direction Suggestions
-- Candidate direction: require title promises to be supported by explicit body evidence.
-- Candidate direction: mark missing comments/transcripts as analysis limitations.
+## 规则方向建议
+- 候选方向：标题承诺必须能在正文中找到明确支撑。
+- 候选方向：评论、逐字稿或视频文件缺失时，必须把限制写入分析。
 
-## Content Asset Direction Suggestions
-- Save reusable title-promise patterns as candidate assets after more samples.
-- Save evidence-backed body outlines as candidate assets after validation.
+## 内容资产方向建议
+- 累积更多样本后，把“标题承诺-正文支撑”结构保存为候选资产。
+- 把有证据支撑的正文提纲沉淀为可复用素材，而不是直接复制原文。
 
-## Content Opportunities
-- Draft a topic around the same problem-solution pattern using original examples.
-- Compare whether similar titles work across multiple samples.
+## 内容机会
+- 用原创案例做一个同类“问题-解决”结构选题。
+- 对比多个样本，观察类似标题承诺是否稳定有效。
 
-## Missing Information And Limitations
+## 缺失信息与限制
 {limitations}
 
 ## Evidence Warnings
@@ -3307,22 +4126,22 @@ def normalize_hot_learning_analysis(task_dir: Path, evidence: Dict[str, object])
         if len(mechanisms) < 3:
             warnings.append("Expected 3 mock mechanisms, extracted %s" % len(mechanisms))
 
-    limitations = section_list(sections, "Missing Information And Limitations")
-    questions = [item for item in limitations if "Missing" in item]
+    limitations = section_list_alias(sections, "Missing Information And Limitations", "缺失信息与限制")
+    questions = [item for item in limitations if "Missing" in item or "缺失" in item]
 
     return {
         "sample_id": evidence.get("sample_id", ""),
         "normalization": {"status": status, "warnings": warnings},
         "mechanisms": mechanisms,
         "transfer": {
-            "learnable": section_list(sections, "Learnable Parts"),
-            "not_copyable": section_list(sections, "Not Copyable Parts"),
+            "learnable": section_list_alias(sections, "Learnable Parts", "可学习部分"),
+            "not_copyable": section_list_alias(sections, "Not Copyable Parts", "不可照搬部分"),
             "account_fit": [],
-            "originality_requirements": section_list(sections, "Not Copyable Parts"),
+            "originality_requirements": section_list_alias(sections, "Not Copyable Parts", "不可照搬部分"),
         },
-        "rule_suggestions": section_list(sections, "Rule Direction Suggestions"),
-        "asset_suggestions": section_list(sections, "Content Asset Direction Suggestions"),
-        "content_opportunities": section_list(sections, "Content Opportunities"),
+        "rule_suggestions": section_list_alias(sections, "Rule Direction Suggestions", "规则方向建议"),
+        "asset_suggestions": section_list_alias(sections, "Content Asset Direction Suggestions", "内容资产方向建议"),
+        "content_opportunities": section_list_alias(sections, "Content Opportunities", "内容机会"),
         "questions": questions,
     }
 
@@ -3374,12 +4193,26 @@ def section_list(sections: Dict[str, str], section: str) -> List[str]:
     return values
 
 
+def section_text_alias(sections: Dict[str, str], *names: str) -> str:
+    for name in names:
+        if name in sections:
+            return sections[name]
+    return ""
+
+
+def section_list_alias(sections: Dict[str, str], *names: str) -> List[str]:
+    for name in names:
+        values = section_list(sections, name)
+        if values:
+            return values
+    return []
+
+
 def parse_mechanisms(markdown: str, sections: Dict[str, str], warnings: List[str]) -> List[Dict[str, object]]:
     mechanisms = []
-    inference_text = first_list_item(sections.get("Inferences", ""))
-    mechanism_section = sections.get("Content Mechanisms", "")
-    chunks = mechanism_section.split("### Mechanism ")
-    for chunk in chunks[1:]:
+    inference_text = first_list_item(section_text_alias(sections, "Inferences", "推断"))
+    mechanism_section = section_text_alias(sections, "Content Mechanisms", "内容机制")
+    for chunk in mechanism_chunks(mechanism_section):
         mechanism = parse_mechanism_chunk(chunk, len(mechanisms) + 1, inference_text)
         if mechanism is None:
             warnings.append("Could not parse mechanism chunk")
@@ -3388,32 +4221,50 @@ def parse_mechanisms(markdown: str, sections: Dict[str, str], warnings: List[str
     return mechanisms
 
 
+def mechanism_chunks(section: str) -> List[str]:
+    chunks = []
+    current = []
+    for line in section.splitlines():
+        if line.startswith("### "):
+            if current:
+                chunks.append("\n".join(current))
+            current = [line[4:].strip()]
+        elif current:
+            current.append(line)
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
 def parse_mechanism_chunk(chunk: str, index: int, inference_text: str) -> Optional[Dict[str, object]]:
     lines = [line.strip() for line in chunk.splitlines() if line.strip()]
     if not lines:
         return None
     heading = lines[0]
-    if ":" in heading:
+    if "：" in heading:
+        name = heading.split("：", 1)[1].strip()
+    elif ":" in heading:
         name = heading.split(":", 1)[1].strip()
     else:
         name = heading.strip()
 
-    description = value_after_prefix(lines, "- Description:")
-    evidence_ref = value_after_prefix(lines, "- Evidence:")
-    confidence = value_after_prefix(lines, "- Confidence:") or "medium"
-    alternative = value_after_prefix(lines, "- Alternative explanation:")
+    description = value_after_prefixes(lines, "- Description:", "- 描述:", "- 描述：")
+    evidence_ref = value_after_prefixes(lines, "- Evidence:", "- 证据:", "- 证据：")
+    confidence = value_after_prefixes(lines, "- Confidence:", "- 置信度:", "- 置信度：") or "medium"
+    alternative = value_after_prefixes(lines, "- Alternative explanation:", "- 替代解释:", "- 替代解释：")
+    mechanism_key = value_after_prefixes(lines, "- Mechanism key:", "- mechanism_key:", "- 机制 key:", "- 机制 key：")
     if not name or not description or not evidence_ref:
         return None
 
     observed_fragment = evidence_ref
     if evidence_ref == "evidence.yaml#facts.title":
-        observed_text = "Title: Mock note title"
+        observed_text = "标题事实来自 Evidence"
     elif evidence_ref == "evidence.yaml#facts.body":
-        observed_text = "Body summary: Mock note body for downstream evidence normalization."
+        observed_text = "正文事实来自 Evidence"
     else:
-        observed_text = "Evidence cited from %s" % evidence_ref
+        observed_text = "证据引用自 %s" % evidence_ref
 
-    return {
+    mechanism = {
         "id": "mechanism-%03d" % index,
         "name": name,
         "description": description,
@@ -3441,12 +4292,23 @@ def parse_mechanism_chunk(chunk: str, index: int, inference_text: str) -> Option
         "confidence": confidence,
         "source_refs": ["raw/hot-learning/analysis.md#Content Mechanisms"],
     }
+    if mechanism_key:
+        mechanism["mechanism_key"] = mechanism_key
+    return mechanism
 
 
 def value_after_prefix(lines: List[str], prefix: str) -> str:
     for line in lines:
         if line.startswith(prefix):
             return line[len(prefix):].strip()
+    return ""
+
+
+def value_after_prefixes(lines: List[str], *prefixes: str) -> str:
+    for prefix in prefixes:
+        value = value_after_prefix(lines, prefix)
+        if value:
+            return value
     return ""
 
 

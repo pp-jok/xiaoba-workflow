@@ -67,6 +67,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument("task_dir")
 
+    import_hot_learning_parser = subparsers.add_parser(
+        "import-hot-learning-analysis",
+        help="Import a manually produced Hot Learning raw Markdown analysis for the current analysis stage.",
+    )
+    import_hot_learning_parser.add_argument("task_dir")
+    import_hot_learning_parser.add_argument("--markdown", required=True)
+
     select_parser = subparsers.add_parser(
         "select-samples",
         help="Submit selected sample IDs for a learning_batch sample_selection gate.",
@@ -102,6 +109,29 @@ def build_parser() -> argparse.ArgumentParser:
     review_parser.add_argument("task_dir")
     review_parser.add_argument("--decision", required=True, choices=("approve", "request_changes", "reject"))
     review_parser.add_argument("--feedback")
+
+    governance_parser = subparsers.add_parser(
+        "prepare-governance",
+        help="Prepare a review-only Personal Content governance plan from a completed learning task.",
+    )
+    governance_parser.add_argument("task_dir")
+    governance_parser.add_argument("--profile-id", required=True)
+
+    propose_rule_parser = subparsers.add_parser(
+        "propose-governance-rule",
+        help="Create a Personal Content candidate rule from one governance plan rule proposal.",
+    )
+    propose_rule_parser.add_argument("task_dir")
+    propose_rule_parser.add_argument("--proposal-id", required=True)
+
+    confirm_rule_parser = subparsers.add_parser(
+        "confirm-governance-rule",
+        help="Confirm or reject a Personal Content candidate rule created from a governance proposal.",
+    )
+    confirm_rule_parser.add_argument("task_dir")
+    confirm_rule_parser.add_argument("--proposal-id", required=True)
+    confirm_rule_parser.add_argument("--decision", required=True, choices=("confirm", "reject"))
+    confirm_rule_parser.add_argument("--note", default="")
     return parser
 
 
@@ -160,6 +190,11 @@ def main(argv: Iterable[str] = None) -> int:
         return run_state_command(lambda: runtime.unblock_task(Path(args.task_dir)), "Unblocked task")
     if args.command == "run":
         return run_state_command(lambda: runtime.run_task(Path.cwd(), Path(args.task_dir)), "Ran stage")
+    if args.command == "import-hot-learning-analysis":
+        return run_state_command(
+            lambda: runtime.import_hot_learning_analysis(Path.cwd(), Path(args.task_dir), Path(args.markdown)),
+            "Imported Hot Learning analysis",
+        )
     if args.command == "select-samples":
         return run_state_command(lambda: runtime.select_samples(Path.cwd(), Path(args.task_dir), args.ids), "Selected samples")
     if args.command == "set-generation-brief":
@@ -170,6 +205,18 @@ def main(argv: Iterable[str] = None) -> int:
         return run_state_command(lambda: runtime.select_topic(Path.cwd(), Path(args.task_dir), args.topic_id), "Selected topic")
     if args.command == "review-content":
         return run_state_command(lambda: runtime.review_content(Path.cwd(), Path(args.task_dir), args.decision, args.feedback), "Reviewed content")
+    if args.command == "prepare-governance":
+        return run_state_command(lambda: runtime.prepare_governance(Path.cwd(), Path(args.task_dir), args.profile_id), "Prepared governance")
+    if args.command == "propose-governance-rule":
+        return run_state_command(
+            lambda: runtime.propose_governance_rule(Path.cwd(), Path(args.task_dir), args.proposal_id),
+            "Proposed governance rule",
+        )
+    if args.command == "confirm-governance-rule":
+        return run_state_command(
+            lambda: runtime.confirm_governance_rule(Path.cwd(), Path(args.task_dir), args.proposal_id, args.decision, args.note),
+            "Confirmed governance rule",
+        )
 
     parser.print_help()
     return 0

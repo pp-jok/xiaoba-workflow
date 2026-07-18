@@ -11,9 +11,11 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_cli(*args, cwd):
+def run_cli(*args, cwd, env_extra=None):
     env = os.environ.copy()
     env["PYTHONPATH"] = str(PROJECT_ROOT)
+    if env_extra:
+        env.update(env_extra)
     return subprocess.run(
         [sys.executable, "-m", "xiaoba_workflow", *args],
         check=False,
@@ -25,6 +27,45 @@ def run_cli(*args, cwd):
 
 
 class MechanismIntakeTests(unittest.TestCase):
+    def test_personal_content_doctor_checks_mock_and_real_configuration(self):
+        with temp_project() as root:
+            mock = run_cli("doctor", "--skill", "personal-content", cwd=root)
+
+            self.assertEqual(mock.returncode, 0, mock.stderr)
+            self.assertIn("provider: mock", mock.stdout)
+
+        with temp_project() as root:
+            runner = write_fake_personal_content_help_cli(root)
+            real = run_cli(
+                "doctor",
+                "--skill",
+                "personal-content",
+                cwd=root,
+                env_extra={
+                    "XIAOBA_PERSONAL_CONTENT_PROVIDER": "real",
+                    "XIAOBA_PERSONAL_CONTENT_COMMAND": json.dumps([sys.executable, str(runner)]),
+                    "XIAOBA_PERSONAL_CONTENT_WORKSPACE": str(root / "pc-workspace"),
+                },
+            )
+
+            self.assertEqual(real.returncode, 0, real.stderr)
+            self.assertIn("provider: real", real.stdout)
+            self.assertIn("workspace: configured", real.stdout)
+            self.assertIn("operations: import-mechanism", real.stdout)
+            self.assertIn("show-generation-context", real.stdout)
+
+        with temp_project() as root:
+            missing = run_cli(
+                "doctor",
+                "--skill",
+                "personal-content",
+                cwd=root,
+                env_extra={"XIAOBA_PERSONAL_CONTENT_PROVIDER": "real"},
+            )
+
+            self.assertEqual(missing.returncode, 1)
+            self.assertIn("XIAOBA_PERSONAL_CONTENT_WORKSPACE", missing.stderr)
+
     def test_mechanism_intake_generates_request_response_result_and_advances(self):
         with temp_project() as root:
             task_dir = prepare_mechanism_intake_task(root)
@@ -240,6 +281,91 @@ class MechanismIntakeTests(unittest.TestCase):
             self.assertIn("current_stage: aggregation", read_text(task_dir / "state.yaml"))
             self.assertFalse((task_dir / "analysis/learning-summary.yaml").exists())
 
+    def test_real_personal_content_provider_calls_command_and_saves_external_refs(self):
+        with temp_project() as root:
+            task_dir = prepare_mechanism_intake_task(root)
+            runner = write_fake_personal_content_cli(root)
+            workspace = root / "pc-workspace"
+
+            result = run_cli(
+                "run",
+                str(task_dir),
+                cwd=root,
+                env_extra={
+                    "XIAOBA_PERSONAL_CONTENT_PROVIDER": "real",
+                    "XIAOBA_PERSONAL_CONTENT_COMMAND": json.dumps([sys.executable, str(runner)]),
+                    "XIAOBA_PERSONAL_CONTENT_WORKSPACE": str(workspace),
+                },
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            request = read_json(task_dir / "raw/personal-content/mechanism-intake-request.json")
+            response = read_json(task_dir / "raw/personal-content/mechanism-intake-response.json")
+            intake_result = read_json(task_dir / "analysis/mechanism-intake-result.json")
+            self.assertEqual(request["adapter"], "real_personal_content")
+            self.assertFalse(request["mock"])
+            self.assertEqual(request["workspace_ref"], str(workspace))
+            self.assertEqual(response["adapter"], "real_personal_content")
+            self.assertFalse(response["mock"])
+            self.assertEqual(len(response["results"]), 3)
+            self.assertEqual(response["results"][0]["status"], "imported")
+            self.assertEqual(response["results"][0]["external_object"]["id"], "pc-mechanism-001")
+            self.assertEqual(intake_result["workspace_ref"], str(workspace))
+            self.assertIn("current_stage: aggregation", read_text(task_dir / "state.yaml"))
+            self.assertFalse((task_dir / "rules").exists())
+            self.assertFalse((task_dir / "mechanisms").exists())
+
+            calls = read_json(root / "fake-personal-content-calls.json")
+            self.assertEqual(len(calls), 3)
+            first_payload = calls[0]["payload"]
+            self.assertEqual(first_payload["status"], "candidate")
+            self.assertEqual(first_payload["source_refs"][0]["source_type"], "external_analysis")
+            self.assertTrue(first_payload["evidence_summary"]["observed_facts"])
+
+    def test_real_personal_content_provider_blocks_when_all_imports_fail(self):
+        with temp_project() as root:
+            task_dir = prepare_mechanism_intake_task(root)
+            runner = write_fake_personal_content_cli(root, fail=True)
+
+            result = run_cli(
+                "run",
+                str(task_dir),
+                cwd=root,
+                env_extra={
+                    "XIAOBA_PERSONAL_CONTENT_PROVIDER": "real",
+                    "XIAOBA_PERSONAL_CONTENT_COMMAND": json.dumps([sys.executable, str(runner)]),
+                    "XIAOBA_PERSONAL_CONTENT_WORKSPACE": str(root / "pc-workspace"),
+                },
+            )
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("all mechanism intake results failed", read_text(task_dir / "state.yaml"))
+            self.assertIn("current_stage: mechanism_intake", read_text(task_dir / "state.yaml"))
+
+    def test_real_personal_content_provider_treats_existing_candidate_as_match(self):
+        with temp_project() as root:
+            task_dir = prepare_mechanism_intake_task(root)
+            runner = write_fake_personal_content_cli(root, duplicate=True)
+            workspace = root / "pc-workspace"
+
+            result = run_cli(
+                "run",
+                str(task_dir),
+                cwd=root,
+                env_extra={
+                    "XIAOBA_PERSONAL_CONTENT_PROVIDER": "real",
+                    "XIAOBA_PERSONAL_CONTENT_COMMAND": json.dumps([sys.executable, str(runner)]),
+                    "XIAOBA_PERSONAL_CONTENT_WORKSPACE": str(workspace),
+                },
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            response = read_json(task_dir / "raw/personal-content/mechanism-intake-response.json")
+            statuses = [item["status"] for item in response["results"]]
+            self.assertEqual(statuses, ["matched_existing", "matched_existing", "matched_existing"])
+            self.assertTrue(all(item["external_object"]["id"] for item in response["results"]))
+            self.assertIn("current_stage: aggregation", read_text(task_dir / "state.yaml"))
+
 
 def prepare_mechanism_intake_task(root):
     task_dir = create_task(root, "learning", "https://example.com/note/1")
@@ -301,6 +427,77 @@ def read_json(path):
 
 def write_json(path, payload):
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def write_fake_personal_content_cli(root, fail=False, duplicate=False):
+    runner = root / "fake_personal_content_cli.py"
+    calls_path = root / "fake-personal-content-calls.json"
+    runner.write_text(
+        """
+import json
+import sys
+from pathlib import Path
+
+calls_path = Path("__CALLS_PATH__")
+calls = json.loads(calls_path.read_text(encoding='utf-8')) if calls_path.is_file() else []
+args = sys.argv[1:]
+if 'import-mechanism' not in args:
+    print(json.dumps({'ok': False, 'error': 'unsupported command'}))
+    sys.exit(1)
+workspace = args[args.index('--workspace') + 1]
+file_path = args[args.index('--file') + 1]
+payload = json.loads(Path(file_path).read_text(encoding='utf-8'))
+calls.append({'workspace': workspace, 'file': file_path, 'payload': payload})
+calls_path.write_text(json.dumps(calls, ensure_ascii=False, indent=2), encoding='utf-8')
+if __FAIL__:
+    print(json.dumps({'ok': False, 'error': 'fake failure for ' + payload.get('id', '')}, ensure_ascii=False))
+    sys.exit(1)
+if __DUPLICATE__:
+    target_dir = Path(workspace) / 'content-mechanisms'
+    target_dir.mkdir(parents=True, exist_ok=True)
+    existing_id = 'existing-' + payload.get('id', '')
+    (target_dir / (existing_id + '.json')).write_text(json.dumps({
+        'id': existing_id,
+        'name': payload.get('name'),
+        'version': 3
+    }, ensure_ascii=False), encoding='utf-8')
+    print(json.dumps({'ok': False, 'error': '同名候选内容机制已存在，暂未重复保存。'}, ensure_ascii=False))
+    sys.exit(1)
+index = len(calls)
+status = 'limited_created' if payload.get('confidence_level') == 'low' else 'created'
+print(json.dumps({
+    'ok': True,
+    'result': {
+        'mechanism_id': 'pc-mechanism-%03d' % index,
+        'status_category': status,
+        'mechanism_status': 'candidate',
+        'confidence_level': payload.get('confidence_level', 'medium'),
+        'missing_information': payload.get('evidence_summary', {}).get('missing_information', []),
+        'limitations': payload.get('limitations', []),
+        'user_summary': 'saved',
+        'machine_summary': {'mechanism_id': 'pc-mechanism-%03d' % index}
+    }
+}, ensure_ascii=False))
+""".replace("__CALLS_PATH__", str(calls_path)).replace("__FAIL__", "True" if fail else "False").replace("__DUPLICATE__", "True" if duplicate else "False"),
+        encoding="utf-8",
+    )
+    return runner
+
+
+def write_fake_personal_content_help_cli(root):
+    runner = root / "fake_personal_content_help_cli.py"
+    runner.write_text(
+        """
+import sys
+
+if '--help' not in sys.argv:
+    print('unsupported')
+    sys.exit(1)
+print('usage: personal-content import-mechanism show-generation-context propose-rule-from-mechanism create-rule-decision resolve-decision')
+""",
+        encoding="utf-8",
+    )
+    return runner
 
 
 def set_running_stage(task_dir, current_stage, next_stage):

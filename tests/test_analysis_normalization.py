@@ -57,19 +57,19 @@ class AnalysisNormalizationTests(unittest.TestCase):
             run_cli("run", str(task_dir), cwd=root)
 
             analysis = read_json(task_dir / "analysis/analysis.yaml")
-            self.assertIn("Clear promise framing.", analysis["transfer"]["learnable"])
-            self.assertIn("Do not copy title wording directly.", analysis["transfer"]["not_copyable"])
-            self.assertIn("Candidate direction: require title promises to be supported by explicit body evidence.", analysis["rule_suggestions"])
-            self.assertIn("Save reusable title-promise patterns as candidate assets after more samples.", analysis["asset_suggestions"])
-            self.assertIn("Draft a topic around the same problem-solution pattern using original examples.", analysis["content_opportunities"])
+            self.assertIn("用明确承诺帮助用户快速判断内容价值。", analysis["transfer"]["learnable"])
+            self.assertIn("不直接复制标题表述。", analysis["transfer"]["not_copyable"])
+            self.assertIn("候选方向：标题承诺必须能在正文中找到明确支撑。", analysis["rule_suggestions"])
+            self.assertIn("累积更多样本后，把“标题承诺-正文支撑”结构保存为候选资产。", analysis["asset_suggestions"])
+            self.assertIn("用原创案例做一个同类“问题-解决”结构选题。", analysis["content_opportunities"])
 
     def test_partial_markdown_normalizes_when_at_least_one_mechanism_is_valid(self):
         with temp_project() as root:
             task_dir = prepare_analysis_normalization_task(root)
             markdown_path = task_dir / "raw/hot-learning/analysis.md"
             markdown = read_text(markdown_path)
-            markdown = markdown.split("### Mechanism 2:", 1)[0]
-            markdown += "\n## Missing Information And Limitations\n- Missing comments\n"
+            markdown = markdown.split("### 机制 2", 1)[0]
+            markdown += "\n## 缺失信息与限制\n- 缺失 comments\n"
             write_text(markdown_path, markdown)
 
             result = run_cli("run", str(task_dir), cwd=root)

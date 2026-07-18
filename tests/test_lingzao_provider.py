@@ -8,6 +8,8 @@ import textwrap
 import unittest
 from pathlib import Path
 
+from xiaoba_workflow import lingzao as lingzao_module
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -162,6 +164,118 @@ class LingzaoProviderTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 1)
             self.assertIn("unsupported Lingzao operation", result.stderr)
+
+    def test_lingzao_runner_passes_xhs_note_type_from_source_url(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fake_client = root / "fake_lingzao_client.py"
+            argv_path = root / "argv.json"
+            fake_client.write_text(
+                textwrap.dedent(
+                    """
+                    import json
+                    import os
+                    import sys
+                    from pathlib import Path
+
+                    Path(os.environ["FAKE_LINGZAO_ARGV"]).write_text(
+                        json.dumps(sys.argv[1:], ensure_ascii=False),
+                        encoding="utf-8",
+                    )
+                    print(json.dumps({
+                        "ok": True,
+                        "data": {
+                            "note": {
+                                "id": "note-video",
+                                "url": "https://www.xiaohongshu.com/explore/abc?type=video",
+                                "title": "Video title",
+                                "body": "Video body",
+                                "author": {"id": "author-1", "name": "Author"},
+                                "published_at": None,
+                                "metrics": {"likes": None},
+                                "images": []
+                            }
+                        }
+                    }, ensure_ascii=False))
+                    """
+                ),
+                encoding="utf-8",
+            )
+            request = {
+                "contract_version": "1.0",
+                "operation": "collect_note",
+                "task_id": "task-runner-test",
+                "sample_id": None,
+                "source": "https://www.xiaohongshu.com/explore/abc?type=video",
+                "output_dir": str((root / "out").resolve()),
+                "prompt_path": str((root / "prompt.md").resolve()),
+                "options": {"collect_comments": False, "collect_transcript": False},
+            }
+            request_path = root / "request.json"
+            write_json(request_path, request)
+            env = os.environ.copy()
+            env["LINGZAO_CLIENT_PATH"] = str(fake_client)
+            env["FAKE_LINGZAO_ARGV"] = str(argv_path)
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(PROJECT_ROOT / "scripts" / "lingzao_runner.py"),
+                    "--input",
+                    str(request_path),
+                    "--output",
+                    request["output_dir"],
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            argv = read_json(argv_path)
+            self.assertIn("--xhs-note-type", argv)
+            self.assertEqual(argv[argv.index("--xhs-note-type") + 1], "video")
+            runner_result = read_json(root / "out" / "result.json")
+            self.assertEqual(runner_result["operation"], "collect_note")
+
+    def test_adapt_external_contract_accepts_canonical_note_url_and_maps_real_metrics(self):
+        source_url = "https://www.xiaohongshu.com/explore/abc?type=video&debug_param=1"
+        canonical_url = "https://www.xiaohongshu.com/explore/abc"
+        result = {
+            "operation": "collect_note",
+            "source": source_url,
+            "note": {
+                "id": "abc",
+                "url": canonical_url,
+                "title": "Real title",
+                "body": "Real body.",
+                "author": {"id": "author-1", "name": "Real Author"},
+                "published_at": None,
+                "metrics": {"liked": 23, "collected": 12, "commented": 15, "shared": 4},
+                "images": [],
+                "comments": {"status": "missing", "items": []},
+                "transcript": {"status": "missing", "text": None},
+            },
+            "warnings": [],
+        }
+        runner_manifest = {"completed_at": "2026-07-16T20:40:48+08:00"}
+
+        adapted = lingzao_module.adapt_external_contract(
+            result,
+            runner_manifest,
+            "collect_note",
+            source_url,
+            None,
+        )
+
+        note = adapted["note-detail.json"]
+        self.assertEqual(note["source"]["original_url"], source_url)
+        self.assertEqual(note["source"]["canonical_url"], canonical_url)
+        self.assertEqual(
+            note["metrics"],
+            {"likes": 23, "saves": 12, "comments": 15, "shares": 4},
+        )
 
     def test_real_runner_rejects_existing_raw_and_path_traversal(self):
         with temp_project() as root:

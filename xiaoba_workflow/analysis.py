@@ -47,22 +47,22 @@ def normalize_hot_learning_analysis_from_files(
         if len(mechanisms) < 3:
             warnings.append("Expected 3 mock mechanisms, extracted %s" % len(mechanisms))
 
-    limitations = section_list(sections, "Missing Information And Limitations")
-    questions = [item for item in limitations if "Missing" in item]
+    limitations = section_list_alias(sections, "Missing Information And Limitations", "缺失信息与限制")
+    questions = [item for item in limitations if "Missing" in item or "缺失" in item]
 
     return {
         "sample_id": evidence.get("sample_id", ""),
         "normalization": {"status": status, "warnings": warnings},
         "mechanisms": mechanisms,
         "transfer": {
-            "learnable": section_list(sections, "Learnable Parts"),
-            "not_copyable": section_list(sections, "Not Copyable Parts"),
+            "learnable": section_list_alias(sections, "Learnable Parts", "可学习部分"),
+            "not_copyable": section_list_alias(sections, "Not Copyable Parts", "不可照搬部分"),
             "account_fit": [],
-            "originality_requirements": section_list(sections, "Not Copyable Parts"),
+            "originality_requirements": section_list_alias(sections, "Not Copyable Parts", "不可照搬部分"),
         },
-        "rule_suggestions": section_list(sections, "Rule Direction Suggestions"),
-        "asset_suggestions": section_list(sections, "Content Asset Direction Suggestions"),
-        "content_opportunities": section_list(sections, "Content Opportunities"),
+        "rule_suggestions": section_list_alias(sections, "Rule Direction Suggestions", "规则方向建议"),
+        "asset_suggestions": section_list_alias(sections, "Content Asset Direction Suggestions", "内容资产方向建议"),
+        "content_opportunities": section_list_alias(sections, "Content Opportunities", "内容机会"),
         "questions": questions,
     }
 
@@ -106,11 +106,26 @@ def section_list(sections: Dict[str, str], section: str) -> List[str]:
     return values
 
 
+def section_text_alias(sections: Dict[str, str], *names: str) -> str:
+    for name in names:
+        if name in sections:
+            return sections[name]
+    return ""
+
+
+def section_list_alias(sections: Dict[str, str], *names: str) -> List[str]:
+    for name in names:
+        values = section_list(sections, name)
+        if values:
+            return values
+    return []
+
+
 def parse_mechanisms(sections: Dict[str, str], warnings: List[str], raw_analysis_ref_file: str) -> List[Dict[str, object]]:
     mechanisms = []
-    inference_text = first_list_item(sections.get("Inferences", ""))
-    chunks = sections.get("Content Mechanisms", "").split("### Mechanism ")
-    for chunk in chunks[1:]:
+    inference_text = first_list_item(section_text_alias(sections, "Inferences", "推断"))
+    mechanism_section = section_text_alias(sections, "Content Mechanisms", "内容机制")
+    for chunk in mechanism_chunks(mechanism_section):
         mechanism = parse_mechanism_chunk(chunk, len(mechanisms) + 1, inference_text, raw_analysis_ref_file)
         if mechanism is None:
             warnings.append("Could not parse mechanism chunk")
@@ -119,27 +134,48 @@ def parse_mechanisms(sections: Dict[str, str], warnings: List[str], raw_analysis
     return mechanisms
 
 
+def mechanism_chunks(section: str) -> List[str]:
+    chunks = []
+    current = []
+    for line in section.splitlines():
+        if line.startswith("### "):
+            if current:
+                chunks.append("\n".join(current))
+            current = [line[4:].strip()]
+        elif current:
+            current.append(line)
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
 def parse_mechanism_chunk(chunk: str, index: int, inference_text: str, raw_analysis_ref_file: str) -> Optional[Dict[str, object]]:
     lines = [line.strip() for line in chunk.splitlines() if line.strip()]
     if not lines:
         return None
     heading = lines[0]
-    name = heading.split(":", 1)[1].strip() if ":" in heading else heading.strip()
-    description = value_after_prefix(lines, "- Description:")
-    evidence_ref = value_after_prefix(lines, "- Evidence:")
-    confidence = value_after_prefix(lines, "- Confidence:") or "medium"
-    alternative = value_after_prefix(lines, "- Alternative explanation:")
+    if "：" in heading:
+        name = heading.split("：", 1)[1].strip()
+    elif ":" in heading:
+        name = heading.split(":", 1)[1].strip()
+    else:
+        name = heading.strip()
+    description = value_after_prefixes(lines, "- Description:", "- 描述:", "- 描述：")
+    evidence_ref = value_after_prefixes(lines, "- Evidence:", "- 证据:", "- 证据：")
+    confidence = value_after_prefixes(lines, "- Confidence:", "- 置信度:", "- 置信度：") or "medium"
+    alternative = value_after_prefixes(lines, "- Alternative explanation:", "- 替代解释:", "- 替代解释：")
+    mechanism_key = value_after_prefixes(lines, "- Mechanism key:", "- mechanism_key:", "- 机制 key:", "- 机制 key：")
     if not name or not description or not evidence_ref:
         return None
 
     if evidence_ref == "evidence.yaml#facts.title":
-        observed_text = "Title: Mock note title"
+        observed_text = "标题事实来自 Evidence"
     elif evidence_ref == "evidence.yaml#facts.body":
-        observed_text = "Body summary: Mock note body for downstream evidence normalization."
+        observed_text = "正文事实来自 Evidence"
     else:
-        observed_text = "Evidence cited from %s" % evidence_ref
+        observed_text = "证据引用自 %s" % evidence_ref
 
-    return {
+    mechanism = {
         "id": "mechanism-%03d" % index,
         "name": name,
         "description": description,
@@ -161,12 +197,23 @@ def parse_mechanism_chunk(chunk: str, index: int, inference_text: str, raw_analy
         "confidence": confidence,
         "source_refs": [raw_analysis_ref_file + "#Content Mechanisms"],
     }
+    if mechanism_key:
+        mechanism["mechanism_key"] = mechanism_key
+    return mechanism
 
 
 def value_after_prefix(lines: List[str], prefix: str) -> str:
     for line in lines:
         if line.startswith(prefix):
             return line[len(prefix):].strip()
+    return ""
+
+
+def value_after_prefixes(lines: List[str], *prefixes: str) -> str:
+    for prefix in prefixes:
+        value = value_after_prefix(lines, prefix)
+        if value:
+            return value
     return ""
 
 

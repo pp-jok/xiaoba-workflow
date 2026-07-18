@@ -87,6 +87,30 @@ class EvidenceNormalizationTests(unittest.TestCase):
             self.assertIsNone(evidence["facts"]["transcript"])
             self.assertIn("comments", evidence["missing"])
             self.assertIn("transcript", evidence["missing"])
+            self.assertEqual(evidence["coverage"]["video_file"], "unsupported")
+            self.assertEqual(evidence["coverage"]["local_video"], "unsupported")
+            self.assertIn("video_file", evidence["missing"])
+
+    def test_manually_provided_transcript_is_preserved_with_source_marker(self):
+        with temp_project() as root:
+            task_dir = prepare_evidence_normalization_task(root)
+            raw_path = task_dir / "raw/lingzao/note-detail.json"
+            raw = read_json(raw_path)
+            raw["transcript"] = {
+                "status": "manually_provided",
+                "source": "user_input",
+                "text": "这是一段用户手工提供的逐字稿。",
+            }
+            write_json(raw_path, raw)
+
+            result = run_cli("run", str(task_dir), cwd=root)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            evidence = read_json(task_dir / "evidence/evidence.yaml")
+            self.assertEqual(evidence["facts"]["transcript"], "这是一段用户手工提供的逐字稿。")
+            self.assertEqual(evidence["coverage"]["transcript"], "manually_provided")
+            self.assertEqual(evidence["coverage"]["transcript_source"], "user_input")
+            self.assertNotIn("transcript", evidence["missing"])
 
     def test_missing_metrics_remain_null(self):
         with temp_project() as root:

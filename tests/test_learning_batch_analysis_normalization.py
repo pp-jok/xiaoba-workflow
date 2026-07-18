@@ -61,8 +61,8 @@ class LearningBatchAnalysisNormalizationTests(unittest.TestCase):
         with temp_project() as root:
             task_dir = prepare_batch_analysis_complete(root, ["sample-001"])
             raw_path = task_dir / "raw/hot-learning/samples/sample-001/analysis.md"
-            markdown = read_text(raw_path).split("### Mechanism 2:", 1)[0]
-            markdown += "\n## Missing Information And Limitations\n- Missing comments\n- Missing transcript\n"
+            markdown = read_text(raw_path).split("### 机制 2", 1)[0]
+            markdown += "\n## 缺失信息与限制\n- 缺失 comments\n- 缺失 transcript\n"
             write_text(raw_path, markdown)
 
             result = run_cli("run", str(task_dir), cwd=root)
@@ -70,7 +70,7 @@ class LearningBatchAnalysisNormalizationTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             analysis = read_json(task_dir / "analysis/samples/sample-001/analysis.yaml")
             self.assertEqual(analysis["normalization"]["status"], "partially_normalized")
-            self.assertIn("Missing comments", analysis["questions"])
+            self.assertIn("缺失 comments", analysis["questions"])
 
     def test_raw_failed_sample_is_skipped_and_partial_success_advances(self):
         with temp_project() as root:

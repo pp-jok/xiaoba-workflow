@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
@@ -113,6 +114,9 @@ def call_lingzao(request: Dict[str, Any]) -> Dict[str, Any]:
     operation = request["operation"]
     if operation == "collect_note":
         command = ["get-note-detail", "--platform", "xhs", "--url", request["source"], "--format", "json"]
+        note_type = infer_xhs_note_type(request)
+        if note_type:
+            command.extend(["--xhs-note-type", note_type])
     elif operation == "collect_profile":
         command = ["get-user-info", "--platform", "xhs", "--url", request["source"], "--format", "json"]
     elif operation == "collect_posted_notes":
@@ -136,6 +140,30 @@ def call_lingzao(request: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         raise RunnerError("Lingzao client returned non-object JSON")
     return payload
+
+
+def infer_xhs_note_type(request: Dict[str, Any]) -> str:
+    options = request.get("options")
+    if isinstance(options, dict):
+        option_value = normalize_xhs_note_type(options.get("xhs_note_type") or options.get("note_type"))
+        if option_value:
+            return option_value
+    parsed = urllib.parse.urlparse(str(request.get("source") or ""))
+    query = urllib.parse.parse_qs(parsed.query)
+    for key in ("type", "xhs_note_type", "note_type"):
+        values = query.get(key) or []
+        for value in values:
+            note_type = normalize_xhs_note_type(value)
+            if note_type:
+                return note_type
+    return ""
+
+
+def normalize_xhs_note_type(value: Any) -> str:
+    lowered = str(value or "").strip().lower()
+    if lowered in ("video", "image"):
+        return lowered
+    return ""
 
 
 def adapt_payload(request: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:

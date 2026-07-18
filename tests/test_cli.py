@@ -168,7 +168,7 @@ class CliTests(unittest.TestCase):
             )
             task_dir = created_task_dir(create_result.stdout, tmp)
 
-            result = run_cli("task-status", str(task_dir), cwd=tmp)
+            result = run_cli("task-status", str(task_dir), "--technical", cwd=tmp)
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("task_id:", result.stdout)

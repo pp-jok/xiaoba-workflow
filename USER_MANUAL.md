@@ -19,12 +19,42 @@
 
 ```bash
 python3 -m xiaoba_workflow validate-project
+python3 -m xiaoba_workflow setup
 python3 -m xiaoba_workflow doctor --skill lingzao
 python3 -m xiaoba_workflow doctor --skill personal-content
 python3 -m xiaoba_workflow doctor --all
 ```
 
 默认情况下两个 doctor 都应显示 mock provider。
+
+`setup` 会创建本地 `xiaoba.local.yaml`，只写入保守配置，不写 API Key。已有配置不会被静默覆盖。
+
+## 2.1 用户态启动
+
+推荐从交互入口开始：
+
+```bash
+python3 -m xiaoba_workflow start
+```
+
+它只会询问你想做什么：
+
+```text
+1. 学习一条小红书笔记
+2. 学习一批对标内容
+3. 生成一篇小红书帖子
+4. 复盘一篇已发布内容
+```
+
+选择后，Xiaoba 会创建任务并自动运行到下一次需要你确认的位置。它不会绕过费用确认、样本选择、选题选择、正文审核或规则确认。
+
+默认状态输出只展示用户能理解的进度。排查问题时再使用技术模式：
+
+```bash
+python3 -m xiaoba_workflow task-status tasks/<task-id> --technical
+python3 -m xiaoba_workflow run tasks/<task-id> --technical
+python3 -m xiaoba_workflow run-until-gate tasks/<task-id> --technical
+```
 
 ## 3. 跑一个 Mock learning
 
@@ -91,13 +121,13 @@ python3 -m xiaoba_workflow run tasks/<task-id>
 
 ```yaml
 learning:
-  collect_comments: ask
+  collect_comments: never
   collect_transcript: ask
   allow_auto_paid_calls: false
   transcript_required: false
 ```
 
-`always` 默认仍会要求确认；只有 `allow_auto_paid_calls: true` 时才会自动调用。`never` 会记录 skipped。`transcript_required: true` 用于明确要求视频逐字稿，失败时任务会 blocked。
+默认不采集评论、逐字稿询问确认、不允许自动付费调用。`always` 默认仍会要求确认；只有 `allow_auto_paid_calls: true` 时才会自动调用。`never` 会记录 skipped。`transcript_required: true` 用于明确要求视频逐字稿，失败时任务会 blocked。
 
 ## 5. Hot Learning Runner 和手工导入
 

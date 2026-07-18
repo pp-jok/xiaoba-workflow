@@ -122,9 +122,9 @@ class V020UxAndContractsTests(unittest.TestCase):
             completed = run_cli("run-until-gate", str(learning), cwd=root)
 
             self.assertEqual(completed.returncode, 0, completed.stderr)
-            self.assertIn("正在执行：Lingzao", completed.stdout)
-            self.assertIn("正在执行：Hot Learning", completed.stdout)
-            self.assertIn("正在执行：Personal Content", completed.stdout)
+            self.assertIn("使用能力：Lingzao", completed.stdout)
+            self.assertIn("使用能力：Hot Learning", completed.stdout)
+            self.assertIn("使用能力：Personal Content", completed.stdout)
             self.assertIn("status: completed", (learning / "state.yaml").read_text(encoding="utf-8"))
 
             generation = create_task(root, "generation")
@@ -142,7 +142,7 @@ class V020UxAndContractsTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("你想做什么？", result.stdout)
         self.assertIn("学习一条小红书笔记", result.stdout)
-        self.assertIn("复盘已发布内容", result.stdout)
+        self.assertIn("复盘一篇已发布内容", result.stdout)
 
     def test_lingzao_runner_v020_capabilities_include_comments_and_transcript(self):
         result = subprocess.run(

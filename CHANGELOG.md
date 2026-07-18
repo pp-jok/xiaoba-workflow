@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.1 - 2026-07-18
+
+- Added UX Lite interactive `start` flow that shows only four user-facing task entries and automatically runs to the next human gate, blocked state, or completion.
+- Added `setup` for conservative local configuration generation without writing secrets.
+- Simplified default user progress for learning, learning_batch, generation, and post_publish_review while preserving `--technical` views for internal state and artifacts.
+- Updated default local learning policy to `collect_comments: never`, `collect_transcript: ask`, and `allow_auto_paid_calls: false`.
+- Added user-facing gate prompts for cost confirmation, sample selection, topic selection, content review, and generation brief collection.
+- Added completion summaries for learning, generation, and post_publish_review.
+- Kept all existing workflow stages, providers, runners, validators, artifacts, and human gates unchanged.
+
 ## 0.2.0 - 2026-07-18
 
 - Added Hot Learning runner contract 1.0 with mock, codex_manual, and external provider modes.

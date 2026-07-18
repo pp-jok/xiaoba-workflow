@@ -38,6 +38,9 @@
 | post_publish_review | 用户提供公开发布链接后生成复盘建议 | `local_workflow` | `mock_verified` | 不自动改规则状态，不发布 |
 | `doctor --all` | 汇总核心、Lingzao、Hot Learning、Personal Content、Generation、发布状态 | `local_workflow` | `verified` | doctor 不执行真实采集 |
 | `run-until-gate` | 自动执行普通阶段直到 waiting/blocked/completed | `local_workflow` | `verified` | 不绕过人工 gate，不确认外部额度 |
+| UX Lite `start` | 四入口交互、创建任务并运行到下一人工 gate 或完成 | `local_workflow` | `verified` | 只优化本地交互，不新增 Skill、Provider 或发布能力 |
+| UX Lite `setup` | 生成保守本地配置，不写入 secret | `local_workflow` | `verified` | 已有 `xiaoba.local.yaml` 不会被静默覆盖 |
+| 用户态进度与摘要 | 默认隐藏内部 stage、runner、contract 和 artifact 路径；technical 模式保留细节 | `local_workflow` | `verified` | 不改变底层 workflow 和文件产物 |
 | publishing | 未实现 | `not_implemented` | `not_verified` | 明确不支持自动发布 |
 
 ## 当前不应宣称

@@ -5,6 +5,7 @@ xiaoba.local.yaml
 __pycache__/
 .pytest_cache/
 *.py[cod]
+*.egg-info/
 tasks/*
 !tasks/.gitkeep
 !tasks/README.md

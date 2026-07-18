@@ -32,7 +32,8 @@ class MockLearningRunTests(unittest.TestCase):
             result = run_cli("run", str(task_dir), cwd=root)
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("Ran stage: task_intake", result.stdout)
+            self.assertIn("已完成：获取内容", result.stdout)
+            self.assertNotIn("task_intake", result.stdout)
             state = read_text(task_dir / "state.yaml")
             self.assertIn("current_stage: evidence_collection", state)
             self.assertFalse((task_dir / "raw/lingzao/note-detail.json").exists())
@@ -45,7 +46,8 @@ class MockLearningRunTests(unittest.TestCase):
             result = run_cli("run", str(task_dir), cwd=root)
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("Ran stage: evidence_collection", result.stdout)
+            self.assertIn("已完成：获取内容", result.stdout)
+            self.assertNotIn("evidence_collection", result.stdout)
             note_detail = json.loads(read_text(task_dir / "raw/lingzao/note-detail.json"))
             invocation = json.loads(read_text(task_dir / "raw/lingzao/invocation.json"))
             state = read_text(task_dir / "state.yaml")

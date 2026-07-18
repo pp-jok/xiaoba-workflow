@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 from typing import Iterable
 
+from . import interactive
 from . import runtime
 from . import presentation
 
@@ -69,6 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Execute the current stage once without running a full workflow.",
     )
     run_parser.add_argument("task_dir")
+    run_parser.add_argument("--technical", action="store_true")
 
     run_until_gate_parser = subparsers.add_parser(
         "run-until-gate",
@@ -81,6 +83,11 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "start",
         help="Show guided entry points for common user tasks.",
+    )
+
+    subparsers.add_parser(
+        "setup",
+        help="Create a conservative local xiaoba.local.yaml configuration guide.",
     )
 
     import_hot_learning_parser = subparsers.add_parser(
@@ -220,7 +227,21 @@ def main(argv: Iterable[str] = None) -> int:
     if args.command == "unblock":
         return run_state_command(lambda: runtime.unblock_task(Path(args.task_dir)), "Unblocked task")
     if args.command == "run":
-        return run_state_command(lambda: runtime.run_task(Path.cwd(), Path(args.task_dir)), "Ran stage")
+        if args.technical:
+            return run_state_command(lambda: runtime.run_task(Path.cwd(), Path(args.task_dir)), "Ran stage")
+        try:
+            task_before, state_before = runtime.read_task_files(Path(args.task_dir))
+            workflows = runtime.load_workflows(Path.cwd() / "workflow.yaml")
+            print(presentation.render_stage_intro(task_before, state_before, workflows))
+            state = runtime.run_task(Path.cwd(), Path(args.task_dir))
+            task_after, state_after = runtime.read_task_files(Path(args.task_dir))
+            executed = str(state.get("_executed_stage", state_before.get("current_stage")))
+            print()
+            print(presentation.render_stage_done(task_after, state_after, executed))
+        except (FileNotFoundError, runtime.WorkflowError) as error:
+            print(str(error), file=sys.stderr)
+            return 1
+        return 0
     if args.command == "run-until-gate":
         try:
             state, messages = runtime.run_until_gate(Path.cwd(), Path(args.task_dir), args.max_steps)
@@ -236,8 +257,17 @@ def main(argv: Iterable[str] = None) -> int:
                 print("%s: %s" % (key, state.get(key)))
         return 0
     if args.command == "start":
-        print(presentation.render_start())
-        return 0
+        try:
+            return interactive.run_start(Path.cwd())
+        except (FileNotFoundError, runtime.WorkflowError) as error:
+            print(str(error), file=sys.stderr)
+            return 1
+    if args.command == "setup":
+        try:
+            return interactive.run_setup(Path.cwd())
+        except (FileNotFoundError, runtime.WorkflowError, OSError) as error:
+            print(str(error), file=sys.stderr)
+            return 1
     if args.command == "import-hot-learning-analysis":
         return run_state_command(
             lambda: runtime.import_hot_learning_analysis(Path.cwd(), Path(args.task_dir), Path(args.markdown)),

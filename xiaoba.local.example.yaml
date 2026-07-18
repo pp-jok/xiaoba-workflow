@@ -27,7 +27,7 @@ learning:
   # ask: 采集 note detail 后进入 external_cost_confirmation，等待用户确认
   # always: 默认仍会确认；只有 allow_auto_paid_calls: true 时才自动调用
   # never: 不调用，内部 raw 会记录 skipped
-  collect_comments: ask
+  collect_comments: never
   collect_transcript: ask
   allow_auto_paid_calls: false
   transcript_required: false

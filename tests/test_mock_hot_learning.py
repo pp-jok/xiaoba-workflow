@@ -262,7 +262,7 @@ class MockHotLearningTests(unittest.TestCase):
 
             run_cli("run", str(task_dir), cwd=root)
 
-            status = run_cli("task-status", str(task_dir), cwd=root)
+            status = run_cli("task-status", str(task_dir), "--technical", cwd=root)
             self.assertIn("current_stage: analysis_normalization", status.stdout)
             self.assertFalse((task_dir / "analysis/analysis.yaml").exists())
 
@@ -278,7 +278,7 @@ class MockHotLearningTests(unittest.TestCase):
             run_cli("select-samples", str(batch), "--ids", "sample-001", "sample-003", cwd=root)
             for _ in range(10):
                 run_cli("run", str(batch), cwd=root)
-            batch_status = run_cli("task-status", str(batch), cwd=root)
+            batch_status = run_cli("task-status", str(batch), "--technical", cwd=root)
             completed_run = run_cli("run", str(batch), cwd=root)
 
             self.assertEqual(generation_intake.returncode, 0, generation_intake.stderr)

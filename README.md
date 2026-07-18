@@ -51,6 +51,7 @@ python3 -m xiaoba_workflow --help
 
 ```bash
 python3 -m xiaoba_workflow validate-project
+python3 -m xiaoba_workflow setup
 python3 -m xiaoba_workflow doctor --skill lingzao
 python3 -m xiaoba_workflow doctor --skill personal-content
 python3 -m xiaoba_workflow doctor --all
@@ -63,6 +64,16 @@ python3 -m xiaoba_workflow run tasks/<task-id>
 python3 -m xiaoba_workflow run-until-gate tasks/<task-id>
 python3 -m xiaoba_workflow select-topic tasks/<task-id> --id topic-001
 python3 -m xiaoba_workflow review-content tasks/<task-id> --decision approve
+```
+
+`setup` 会生成本地 `xiaoba.local.yaml` 配置引导，不写入 API Key。`start` 是面向使用者的入口，只展示四类任务：学习一条笔记、学习一批对标内容、生成一篇帖子、复盘一篇已发布内容。它会创建任务并调用现有 `run-until-gate` 跑到人工确认、blocked 或 completed，不会绕过任何 gate。
+
+默认输出隐藏 runner、contract、manifest、内部 YAML 路径等技术细节。需要排查问题时使用 `--technical`：
+
+```bash
+python3 -m xiaoba_workflow task-status tasks/<task-id> --technical
+python3 -m xiaoba_workflow run tasks/<task-id> --technical
+python3 -m xiaoba_workflow run-until-gate tasks/<task-id> --technical
 ```
 
 `run` 一次只执行当前阶段一次，不会连续跑完整流程。
@@ -128,13 +139,13 @@ python3 -m xiaoba_workflow run tasks/<task-id>
 
 ```yaml
 learning:
-  collect_comments: ask
+  collect_comments: never
   collect_transcript: ask
   allow_auto_paid_calls: false
   transcript_required: false
 ```
 
-`ask|always|never` 控制是否尝试评论和逐字稿采集。即使设置为 `always`，默认仍会要求确认；只有显式设置 `allow_auto_paid_calls: true` 才会自动调用可能消耗额度的 Lingzao 操作。`transcript_required: true` 时，视频逐字稿失败会阻塞任务。
+`ask|always|never` 控制是否尝试评论和逐字稿采集。默认不采集评论、逐字稿询问确认、不允许自动付费调用。即使设置为 `always`，默认仍会要求确认；只有显式设置 `allow_auto_paid_calls: true` 才会自动调用可能消耗额度的 Lingzao 操作。`transcript_required: true` 时，视频逐字稿失败会阻塞任务。
 
 真实输出会同时保存：
 

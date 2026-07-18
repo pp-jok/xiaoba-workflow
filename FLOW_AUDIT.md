@@ -80,13 +80,77 @@
 - 保留 `tasks/.gitkeep` 和 `tasks/README.md`；
 - 文档补充清理命令和发布前检查命令。
 
+### 8. Hot Learning 缺少稳定 runner contract
+
+问题：Hot Learning 原先主要依赖 Codex/人工按 Prompt 输出 Markdown，缺少可测试的 runner 入口。
+
+修复：
+
+- 新增 `scripts/hot_learning_runner.py`；
+- 支持 `--capabilities`、`--doctor`；
+- 支持 `analyze_single` 和 `analyze_cross_sample`；
+- 默认 mock，保留 `codex_manual` 和 `external` provider 边界。
+
+边界：未声称 Hot Learning 有官方 API；external 只做 contract/fake runner 验证。
+
+### 9. CLI 默认输出过于技术化
+
+问题：`task-status` 和连续执行缺少用户态阶段名、Skill 名和下一步建议。
+
+修复：
+
+- 新增 `xiaoba_workflow/presentation.py`；
+- `task-status` 默认显示用户态进度；
+- `task-status --technical` 保留原始字段；
+- `run-until-gate` 每阶段显示当前任务、阶段、执行模块、作用和下一步。
+
+### 10. 缺少统一诊断
+
+问题：用户需要分别检查不同 Skill，无法快速知道整体配置状态。
+
+修复：
+
+- 新增 `doctor --all`；
+- 汇总核心工作流、Lingzao、Hot Learning、Personal Content、Generation Provider 和自动发布状态；
+- doctor 不执行真实采集、不消耗额度。
+
+### 11. 用户修改反馈没有候选治理记录
+
+问题：`request_changes` 只触发修订，没有沉淀为可治理候选偏好。
+
+修复：
+
+- `request_changes` 写入 `feedback/governance-candidates.yaml`；
+- 新增 `confirm-feedback-rule`；
+- 候选反馈不会自动激活为长期规则，也不会自动发布。
+
+### 12. 发布后复盘没有任务骨架
+
+问题：手工发布后的数据复盘没有独立 workflow。
+
+修复：
+
+- 新增 `post_publish_review` 任务类型；
+- 生成 `analysis/post-publish-review.yaml`；
+- 只输出建议，不自动修改 Personal Content 规则状态。
+
+### 13. 并发写入只有原子替换，没有统一锁
+
+问题：多个命令同时写入同一任务文件时，存在 read-modify-write 覆盖风险。
+
+修复：
+
+- 新增 `xiaoba_workflow/locks.py`；
+- 核心 state 和 JSON 写入函数使用文件锁；
+- 保持原子临时文件 replace 策略。
+
 ## 仍然保留的边界
 
-- Hot Learning 仍是 Prompt 驱动，不是外部 CLI/API。
+- Hot Learning 有本地 runner contract，但未验证官方真实 API。
 - Lingzao 不下载视频文件。
 - Lingzao 自动逐字稿能力不保证。
 - learning_batch 真实账号批量采集未完整验证。
-- generation 生成的是待审核内容包，不是发布稿。
+- generation 生成的是待审核内容包，不是发布稿；external generation 只做 fake runner contract 验证。
 - 发布功能未实现。
 - Personal Content content asset 治理未接入。
 

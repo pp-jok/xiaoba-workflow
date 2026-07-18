@@ -76,8 +76,17 @@ class LingzaoProviderTests(unittest.TestCase):
             self.assertNotIn("SECRET_VALUE", read_text(task_dir / "raw/lingzao/invocation.json"))
             self.assertNotIn("SECRET_VALUE", read_text(task_dir / "raw/lingzao/execution-stdout.log"))
 
-            normalize = run_cli("run", str(task_dir), cwd=root)
+            waiting_state = read_text(task_dir / "state.yaml")
+            self.assertIn("status: waiting_for_user", waiting_state)
+            self.assertIn("external_cost_confirmation", waiting_state)
+            skipped = run_cli("confirm-external-cost", str(task_dir), "--decision", "skip", cwd=root)
+            self.assertEqual(skipped.returncode, 0, skipped.stderr)
+
+            normalize = run_cli("run", str(task_dir), cwd=root, env_extra=real_env(runner))
             self.assertEqual(normalize.returncode, 0, normalize.stderr)
+            self.assertIn("current_stage: evidence_normalization", read_text(task_dir / "state.yaml"))
+            normalized = run_cli("run", str(task_dir), cwd=root)
+            self.assertEqual(normalized.returncode, 0, normalized.stderr)
             self.assertTrue((task_dir / "evidence/evidence.yaml").is_file())
 
     def test_real_fake_runner_supports_batch_screening_and_sample_note(self):

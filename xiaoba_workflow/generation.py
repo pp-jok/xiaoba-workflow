@@ -4,6 +4,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from . import generation_provider
+from . import locks
+
 
 class GenerationError(Exception):
     pass
@@ -18,16 +21,20 @@ def read_json(path: Path) -> Dict[str, object]:
 
 
 def write_json_atomic(path: Path, payload: Dict[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_file = path.with_name("." + path.name + ".tmp")
-    temp_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temp_file.replace(path)
+    with locks.file_lock(path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_file = path.with_name("." + path.name + ".tmp")
+        temp_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        temp_file.replace(path)
 
 
-def run_content_generation(task_dir: Path, task: Dict[str, str], workspace_ref: str) -> Dict[str, object]:
-    context = read_json(task_dir / "content" / "generation-context.yaml")
-    candidates = read_json(task_dir / "content" / "topic-candidates.json")
-    selected = read_json(task_dir / "content" / "selected-topic.json")
+def run_content_generation(task_dir: Path, task: Dict[str, str], workspace_ref: str, root: Optional[Path] = None) -> Dict[str, object]:
+    context_path = task_dir / "content" / "generation-context.yaml"
+    candidates_path = task_dir / "content" / "topic-candidates.json"
+    selected_path = task_dir / "content" / "selected-topic.json"
+    context = read_json(context_path)
+    candidates = read_json(candidates_path)
+    selected = read_json(selected_path)
     selected_topic = validate_selected_topic(task, context, candidates, selected)
 
     request_path = task_dir / "raw" / "personal-content" / "content-generation-request.json"
@@ -48,6 +55,27 @@ def run_content_generation(task_dir: Path, task: Dict[str, str], workspace_ref: 
     revision = load_latest_change_request(task_dir)
     if revision is not None:
         revision["number"] = revision_number
+    if root is not None and generation_provider.provider_config(root)["provider"] == "external":
+        package = run_external_content_generation(
+            root,
+            task_dir,
+            task,
+            context,
+            selected_topic,
+            context_path,
+            selected_path,
+            revision_number,
+            revision,
+        )
+        validate_content_package(package, task, context, selected_topic)
+        request = build_external_content_generation_request_record(task, revision_number, context_path, selected_path, revision)
+        response = build_external_content_generation_response_record(task, revision_number)
+        write_json_atomic(request_path, request)
+        write_json_atomic(response_path, response)
+        write_json_atomic(package_path, package)
+        write_json_atomic(revision_dir(task_dir, revision_number) / "content-package.yaml", package)
+        update_revision_index(task_dir, revision_number)
+        return package
     request = build_content_generation_request(task, context, selected_topic, workspace_ref, revision)
     response = build_content_generation_response(task, context, selected_topic, request)
     package = build_content_package(task, context, selected_topic, response)
@@ -59,6 +87,118 @@ def run_content_generation(task_dir: Path, task: Dict[str, str], workspace_ref: 
     write_json_atomic(revision_dir(task_dir, revision_number) / "content-package.yaml", package)
     update_revision_index(task_dir, revision_number)
     return package
+
+
+def run_external_content_generation(
+    root: Path,
+    task_dir: Path,
+    task: Dict[str, str],
+    context: Dict[str, object],
+    selected_topic: Dict[str, object],
+    context_path: Path,
+    selected_path: Path,
+    revision_number: int,
+    revision: Optional[Dict[str, object]],
+) -> Dict[str, object]:
+    previous_content_ref = None
+    feedback_ref = None
+    if revision is not None:
+        previous_content_ref = task_dir / str(revision["previous_content_ref"])
+        feedback_ref = task_dir / "content" / "revisions" / ("revision-%03d" % int(revision["number"] - 1)) / "review-decision.json"
+    output_dir = task_dir / "content" / "external" / ("revision-%03d" % revision_number)
+    package = generation_provider.external_generate_content(
+        root=root,
+        task=task,
+        generation_context_ref=context_path,
+        selected_topic_ref=selected_path,
+        output_dir=output_dir,
+        revision_number=revision_number,
+        previous_content_ref=previous_content_ref,
+        feedback_ref=feedback_ref,
+    )
+    package.setdefault("revision_number", revision_number)
+    package.setdefault("previous_content_ref", str(previous_content_ref.relative_to(task_dir)) if previous_content_ref else None)
+    package.setdefault("feedback_ref", str(feedback_ref.relative_to(task_dir)) if feedback_ref else None)
+    package.setdefault("status", "draft")
+    validate_external_content_refs(package, context, selected_topic, revision_number, previous_content_ref, feedback_ref)
+    return package
+
+
+def validate_external_content_refs(
+    package: Dict[str, object],
+    context: Dict[str, object],
+    selected_topic: Dict[str, object],
+    revision_number: int,
+    previous_content_ref: Optional[Path],
+    feedback_ref: Optional[Path],
+) -> None:
+    if package.get("revision_number") != revision_number:
+        raise GenerationError("external content revision_number mismatch")
+    if package.get("selected_topic_id") != selected_topic.get("topic_id"):
+        raise GenerationError("external content selected_topic_id mismatch")
+    actual_previous = package.get("previous_content_ref")
+    actual_feedback = package.get("feedback_ref")
+    if previous_content_ref and not ref_points_to(actual_previous, previous_content_ref):
+        raise GenerationError("external content previous_content_ref mismatch")
+    if feedback_ref and not ref_points_to(actual_feedback, feedback_ref):
+        raise GenerationError("external content feedback_ref mismatch")
+    validate_traceability(package.get("traceability") or {}, context)
+    if not package.get("assumptions") or not package.get("limitations"):
+        raise GenerationError("external content must include assumptions and limitations")
+
+
+def ref_points_to(value: object, expected: Path) -> bool:
+    text = str(value or "")
+    if not text:
+        return False
+    expected_text = str(expected)
+    if text == expected_text:
+        return True
+    parts = expected.parts
+    if "content" in parts:
+        rel = str(Path(*parts[parts.index("content"):]))
+        return text == rel or text.endswith(rel)
+    return text.endswith(expected.name)
+
+
+def build_external_content_generation_request_record(
+    task: Dict[str, str],
+    revision_number: int,
+    context_path: Path,
+    selected_path: Path,
+    revision: Optional[Dict[str, object]],
+) -> Dict[str, object]:
+    previous = revision.get("previous_content_ref") if revision else None
+    feedback = None
+    if revision:
+        feedback = "content/revisions/revision-%03d/review-decision.json" % int(revision["number"] - 1)
+    return {
+        "adapter": "external_generation_provider",
+        "mock": False,
+        "task_id": task["task_id"],
+        "operation": "generate_content",
+        "revision_number": revision_number,
+        "generation_context_ref": str(context_path),
+        "selected_topic_ref": str(selected_path),
+        "previous_content_ref": previous,
+        "feedback_ref": feedback,
+        "created_at": now_iso(),
+        "published": False,
+    }
+
+
+def build_external_content_generation_response_record(task: Dict[str, str], revision_number: int) -> Dict[str, object]:
+    return {
+        "adapter": "external_generation_provider",
+        "mock": False,
+        "task_id": task["task_id"],
+        "operation": "generate_content",
+        "revision_number": revision_number,
+        "runner_output_dir": "content/external/revision-%03d" % revision_number,
+        "runner_manifest": "content/external/revision-%03d/runner-manifest.json" % revision_number,
+        "executed_at": now_iso(),
+        "published": False,
+    }
 
 
 def validate_selected_topic(
@@ -363,10 +503,77 @@ def review_content(task_dir: Path, task: Dict[str, str], state: Dict[str, object
             shutil.copy2(package_path, rev_dir / "content-package.yaml")
         write_json_atomic(rev_dir / "review-decision.json", payload)
         record_revision_decision(task_dir, revision_number, "content/revisions/revision-%03d/review-decision.json" % revision_number)
+        write_feedback_governance_candidates(task_dir, task, payload)
         clear_current_content_artifacts(task_dir)
     else:
         write_json_atomic(task_dir / "content" / "review-decision.json", payload)
     return payload
+
+
+def write_feedback_governance_candidates(task_dir: Path, task: Dict[str, str], review: Dict[str, object]) -> None:
+    feedback = str(review.get("feedback") or "").strip()
+    if not feedback:
+        return
+    path = task_dir / "feedback" / "governance-candidates.yaml"
+    if path.exists():
+        existing = read_json(path)
+        if existing.get("task_id") != task["task_id"]:
+            raise GenerationError("feedback governance candidates task_id mismatch")
+        return
+    candidate = {
+        "candidate_id": "feedback-rule-001",
+        "status": "candidate",
+        "rule_statement": summarize_feedback_rule(feedback),
+        "categories": classify_feedback(feedback),
+        "source": {
+            "type": "content_review_feedback",
+            "revision_number": review.get("revision_number"),
+            "feedback": feedback,
+        },
+        "requires_user_confirmation": True,
+    }
+    payload = {
+        "task_id": task["task_id"],
+        "operation": "feedback_governance_candidate",
+        "auto_activated": False,
+        "personal_content_called": False,
+        "published": False,
+        "candidates": [candidate],
+        "created_at": now_iso(),
+    }
+    write_json_atomic(path, payload)
+
+
+def summarize_feedback_rule(feedback: str) -> str:
+    if "营销" in feedback:
+        return "减少强营销表达，优先使用经验分享语气。"
+    if "真实经历" in feedback or "经历" in feedback:
+        return "涉及个人经历时必须由用户确认，不得编造。"
+    if "标题" in feedback:
+        return "标题风格需要符合用户本次反馈。"
+    return "将本次修改反馈保留为候选偏好，确认前不进入长期规则。"
+
+
+def classify_feedback(feedback: str) -> List[str]:
+    categories = []
+    mapping = [
+        ("营销", "marketing_intensity"),
+        ("语气", "tone"),
+        ("结构", "structure"),
+        ("标题", "title_style"),
+        ("开头", "opening_style"),
+        ("证据", "evidence"),
+        ("经历", "personal_experience"),
+        ("长度", "length"),
+        ("排版", "format"),
+        ("不要", "forbidden_pattern"),
+    ]
+    for token, category in mapping:
+        if token in feedback and category not in categories:
+            categories.append(category)
+    if not categories:
+        categories.append("other")
+    return categories
 
 
 def revision_dir(task_dir: Path, number: int) -> Path:

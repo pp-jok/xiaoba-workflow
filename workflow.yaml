@@ -2,6 +2,7 @@ task_types:
   - learning
   - learning_batch
   - generation
+  - post_publish_review
 
 required_templates:
   - templates/task.yaml
@@ -22,15 +23,6 @@ required_directories:
   - prompts
   - tasks
   - tests
-
-stage_1_scope:
-  real_external_skills: false
-  task_creation: true
-  state_transitions: true
-  adapters: true
-  normalizers: true
-  validators: true
-  mock_flows: false
 
 skills:
   lingzao:
@@ -98,6 +90,16 @@ workflows:
         next: review
       review:
         human_gate: true
+        next: completed
+      completed:
+        terminal: true
+
+  post_publish_review:
+    initial_stage: task_intake
+    stages:
+      task_intake:
+        next: review_analysis
+      review_analysis:
         next: completed
       completed:
         terminal: true

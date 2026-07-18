@@ -13,7 +13,13 @@ from typing import Any, Dict, List
 
 
 CONTRACT_VERSION = "1.0"
-OPERATIONS = ("collect_note", "collect_profile", "collect_posted_notes")
+OPERATIONS = (
+    "collect_note",
+    "collect_profile",
+    "collect_posted_notes",
+    "collect_comments",
+    "collect_transcript",
+)
 
 
 def main() -> int:
@@ -72,6 +78,8 @@ def capabilities() -> Dict[str, Any]:
         "contract_version": CONTRACT_VERSION,
         "runner": "xiaoba-lingzao-runner",
         "operations": list(OPERATIONS),
+        "optional_cost_operations": ["collect_comments", "collect_transcript"],
+        "unsupported_outputs": ["video_file"],
         "requires_auth": True,
         "required_env": ["LINGZAO_CLIENT_PATH or LINGZAO_SKILL_ROOT"],
         "login_state": "configured" if config_path.is_file() or os.environ.get("LINGZAO_API_KEY") else "missing_api_key",
@@ -121,6 +129,10 @@ def call_lingzao(request: Dict[str, Any]) -> Dict[str, Any]:
         command = ["get-user-info", "--platform", "xhs", "--url", request["source"], "--format", "json"]
     elif operation == "collect_posted_notes":
         command = ["get-user-posted-notes", "--platform", "xhs", "--url", request["source"], "--format", "json"]
+    elif operation == "collect_comments":
+        command = ["get-note-comments", "--platform", "xhs", "--url", request["source"], "--format", "json"]
+    elif operation == "collect_transcript":
+        command = ["extract-video-copy", "--platform", "xhs", "--url", request["source"], "--format", "json"]
     else:
         raise RunnerError("unsupported operation", 2)
 
@@ -203,21 +215,42 @@ def adapt_payload(request: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str,
             },
             "warnings": warnings(payload),
         }
-    notes = list_value(data, "notes", "items", "list")
+    if operation == "collect_posted_notes":
+        notes = list_value(data, "notes", "items", "list")
+        return {
+            "operation": operation,
+            "source": source,
+            "notes": [
+                {
+                    "id": value(item, "id", "note_id"),
+                    "url": value(item, "url", "note_url"),
+                    "title": value(item, "title"),
+                    "published_at": value(item, "published_at", "publish_time", "created_at"),
+                    "metrics": first_dict(item, "metrics", "stats") or {},
+                }
+                for item in notes
+                if isinstance(item, dict)
+            ],
+            "warnings": warnings(payload),
+        }
+    if operation == "collect_comments":
+        comments = list_value(data, "comments", "items", "list")
+        return {
+            "operation": operation,
+            "source": source,
+            "comments": {"status": "available", "items": comments},
+            "warnings": warnings(payload),
+        }
+    transcript = first_dict(data, "transcript", "copy", "video_copy")
+    text = value(transcript, "text", "content") if transcript else value(data, "text", "content", "transcript")
     return {
         "operation": operation,
         "source": source,
-        "notes": [
-            {
-                "id": value(item, "id", "note_id"),
-                "url": value(item, "url", "note_url"),
-                "title": value(item, "title"),
-                "published_at": value(item, "published_at", "publish_time", "created_at"),
-                "metrics": first_dict(item, "metrics", "stats") or {},
-            }
-            for item in notes
-            if isinstance(item, dict)
-        ],
+        "transcript": {
+            "status": "available" if text else "missing",
+            "text": text,
+        },
+        "video_file": {"status": "unsupported"},
         "warnings": warnings(payload),
     }
 

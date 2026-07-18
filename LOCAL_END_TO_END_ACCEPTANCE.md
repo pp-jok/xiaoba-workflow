@@ -151,6 +151,20 @@ PYTHONPYCACHEPREFIX=/tmp/xiaoba-pycache python3 -m compileall xiaoba_workflow sc
 python3 -m xiaoba_workflow validate-project
 ```
 
+## 7.1 阶段 34 收口验证
+
+本地 fake runner 已覆盖以下真实模式契约：
+
+- Lingzao real provider：`collect_note` 后停在 `external_cost_confirmation`；
+- `confirm-external-cost --decision confirm` 后执行 comments/transcript 并合并到内部 raw；
+- `confirm-external-cost --decision skip` 后记录跳过，不补造缺失内容；
+- Evidence Normalizer 可继续读取内部 `raw/lingzao/note-detail.json`；
+- Generation external provider：topic selection 后执行 `generate_content`；
+- `request_changes` 后生成第二版 content package；
+- `approve` 只完成本地任务，不发布。
+
+这些验证不等同于真实在线 Lingzao 或真实在线生成模型验收。
+
 ## 8. 发布前检查
 
 ```bash

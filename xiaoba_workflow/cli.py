@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Iterable
 
 from . import runtime
+from . import presentation
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -21,6 +22,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Check local provider configuration without installing or modifying anything.",
     )
     doctor_parser.add_argument("--skill", default="lingzao")
+    doctor_parser.add_argument("--all", action="store_true", dest="all_skills")
 
     create_parser = subparsers.add_parser(
         "create-task",
@@ -35,6 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Read and display the core task and state fields.",
     )
     status_parser.add_argument("task_dir")
+    status_parser.add_argument("--technical", action="store_true")
 
     advance_parser = subparsers.add_parser(
         "advance",
@@ -66,6 +69,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Execute the current stage once without running a full workflow.",
     )
     run_parser.add_argument("task_dir")
+
+    run_until_gate_parser = subparsers.add_parser(
+        "run-until-gate",
+        help="Run ordinary stages until the task reaches a waiting, blocked, or completed state.",
+    )
+    run_until_gate_parser.add_argument("task_dir")
+    run_until_gate_parser.add_argument("--max-steps", type=int, default=20)
+    run_until_gate_parser.add_argument("--technical", action="store_true")
+
+    subparsers.add_parser(
+        "start",
+        help="Show guided entry points for common user tasks.",
+    )
 
     import_hot_learning_parser = subparsers.add_parser(
         "import-hot-learning-analysis",
@@ -132,6 +148,21 @@ def build_parser() -> argparse.ArgumentParser:
     confirm_rule_parser.add_argument("--proposal-id", required=True)
     confirm_rule_parser.add_argument("--decision", required=True, choices=("confirm", "reject"))
     confirm_rule_parser.add_argument("--note", default="")
+
+    feedback_rule_parser = subparsers.add_parser(
+        "confirm-feedback-rule",
+        help="Confirm, reject, or keep a request_changes feedback candidate for this generation task only.",
+    )
+    feedback_rule_parser.add_argument("task_dir")
+    feedback_rule_parser.add_argument("--candidate-id", required=True)
+    feedback_rule_parser.add_argument("--decision", required=True, choices=("confirm", "reject", "current_only"))
+
+    cost_parser = subparsers.add_parser(
+        "confirm-external-cost",
+        help="Confirm or skip optional external operations that may consume provider credits.",
+    )
+    cost_parser.add_argument("task_dir")
+    cost_parser.add_argument("--decision", required=True, choices=("confirm", "skip"))
     return parser
 
 
@@ -151,7 +182,7 @@ def main(argv: Iterable[str] = None) -> int:
 
     if args.command == "doctor":
         try:
-            messages = runtime.doctor(Path.cwd(), args.skill)
+            messages = runtime.doctor_all(Path.cwd()) if args.all_skills else runtime.doctor(Path.cwd(), args.skill)
         except (runtime.WorkflowError, FileNotFoundError) as error:
             print(str(error), file=sys.stderr)
             return 1
@@ -172,12 +203,12 @@ def main(argv: Iterable[str] = None) -> int:
 
     if args.command == "task-status":
         try:
-            status = runtime.read_task_status(Path(args.task_dir))
+            task, state = runtime.read_task_files(Path(args.task_dir))
+            workflows = runtime.load_workflows(Path.cwd() / "workflow.yaml")
         except (FileNotFoundError, runtime.WorkflowError) as error:
             print(str(error), file=sys.stderr)
             return 1
-        for key in ("task_id", "task_type", "status", "current_stage", "current_step", "next_stage"):
-            print("%s: %s" % (key, status[key]))
+        print(presentation.render_task_status(task, state, workflows, technical=args.technical))
         return 0
 
     if args.command == "advance":
@@ -190,6 +221,23 @@ def main(argv: Iterable[str] = None) -> int:
         return run_state_command(lambda: runtime.unblock_task(Path(args.task_dir)), "Unblocked task")
     if args.command == "run":
         return run_state_command(lambda: runtime.run_task(Path.cwd(), Path(args.task_dir)), "Ran stage")
+    if args.command == "run-until-gate":
+        try:
+            state, messages = runtime.run_until_gate(Path.cwd(), Path(args.task_dir), args.max_steps)
+        except (FileNotFoundError, runtime.WorkflowError) as error:
+            print(str(error), file=sys.stderr)
+            return 1
+        for message in messages:
+            print(message)
+            print()
+        if args.technical:
+            print("技术信息：")
+            for key in ("status", "current_stage", "next_stage"):
+                print("%s: %s" % (key, state.get(key)))
+        return 0
+    if args.command == "start":
+        print(presentation.render_start())
+        return 0
     if args.command == "import-hot-learning-analysis":
         return run_state_command(
             lambda: runtime.import_hot_learning_analysis(Path.cwd(), Path(args.task_dir), Path(args.markdown)),
@@ -216,6 +264,16 @@ def main(argv: Iterable[str] = None) -> int:
         return run_state_command(
             lambda: runtime.confirm_governance_rule(Path.cwd(), Path(args.task_dir), args.proposal_id, args.decision, args.note),
             "Confirmed governance rule",
+        )
+    if args.command == "confirm-feedback-rule":
+        return run_state_command(
+            lambda: runtime.confirm_feedback_rule(Path(args.task_dir), args.candidate_id, args.decision),
+            "Confirmed feedback rule",
+        )
+    if args.command == "confirm-external-cost":
+        return run_state_command(
+            lambda: runtime.confirm_external_cost(Path(args.task_dir), args.decision),
+            "Confirmed external cost",
         )
 
     parser.print_help()

@@ -3,7 +3,7 @@
 ## 1. Environment
 
 - Python: 3.9.6
-- Project path: `/Users/lht/纷乱的想法/codex主目录/工作流DEV`
+- Project path: repository root
 - Provider configuration: Lingzao mock, Hot Learning mock, Personal Content mock
 - Network / real Skill use: no real Skill was called, no network access was used, no API key was configured, and no publishing action was attempted.
 
@@ -11,18 +11,18 @@
 
 | Task ID | Type | Path | Source / brief | Final status | Run count | Human operations |
 | --- | --- | --- | --- | --- | --- | --- |
-| `task-20260716-154508-902185-learning` | `learning` | `tasks/task-20260716-154508-902185-learning` | `https://example.com/mock-e2e-acceptance/note-001` | `completed / completed` | 7 | none |
-| `task-20260716-154824-742072-learning-batch` | `learning_batch` | `tasks/task-20260716-154824-742072-learning-batch` | `https://example.com/mock-e2e-acceptance/account-001` | `completed / completed` | 16 total including intake/screening; 14 after sample selection | `select-samples sample-001 sample-003 sample-005` |
-| `task-20260716-155248-641568-generation` | `generation` | `tasks/task-20260716-155248-641568-generation` | `mock-e2e-acceptance：为包子 IP 生成一篇面向独立开发者的小红书内容` | `completed / completed` | 5 | `attach-learning` x2, `select-topic topic-003`, `review-content request_changes`, `review-content approve` |
+| `task-<learning>` | `learning` | `tasks/<learning-task>` | `https://example.com/mock-e2e-acceptance/note-001` | `completed / completed` | 7 | none |
+| `task-<learning-batch>` | `learning_batch` | `tasks/<learning-batch-task>` | `https://example.com/mock-e2e-acceptance/account-001` | `completed / completed` | 16 total including intake/screening; 14 after sample selection | `select-samples sample-001 sample-003 sample-005` |
+| `task-<generation>` | `generation` | `tasks/<generation-task>` | mock generation brief | `completed / completed` | 5 | `attach-learning` x2, `select-topic topic-003`, `review-content request_changes`, `review-content approve` |
 
 Additional diagnostic tasks retained for inspection:
 
-- `task-20260716-155052-524709-generation`: parallel attach diagnostic; stopped at `topic_selection`.
-- `task-20260716-160052-762571-generation`: generation brief bypass diagnostic; currently `running / topic_generation`.
-- `task-20260716-160226-011974-generation`: normal generation brief gate diagnostic; currently `running / context_assembly`.
-- `task-20260716-160333-081367-learning`: mock Lingzao failure diagnostic; blocked at `evidence_collection`.
-- `task-20260716-160420-249067-generation`: request_changes missing feedback diagnostic; waiting at `review`.
-- `task-20260716-160522-522550-learning`: incomplete raw diagnostic; blocked at `evidence_normalization`.
+- `task-<parallel-attach-diagnostic>`: parallel attach diagnostic; stopped at `topic_selection`.
+- `task-<brief-bypass-diagnostic>`: generation brief bypass diagnostic.
+- `task-<brief-gate-diagnostic>`: normal generation brief gate diagnostic.
+- `task-<mock-lingzao-failure>`: mock Lingzao failure diagnostic; blocked at `evidence_collection`.
+- `task-<request-changes-diagnostic>`: request_changes missing feedback diagnostic; waiting at `review`.
+- `task-<incomplete-raw-diagnostic>`: incomplete raw diagnostic; blocked at `evidence_normalization`.
 
 ## 3. Stage Results
 
@@ -143,7 +143,7 @@ task_intake
 Learning source attachment:
 
 - Attached sources: 2
-- Source tasks: `task-20260716-154508-902185-learning`, `task-20260716-154824-742072-learning-batch`
+- Source tasks: `task-<learning>`, `task-<learning-batch>`
 - Source task files were not modified by generation acceptance operations.
 
 Topic selection:
@@ -205,24 +205,24 @@ Generation boundaries:
 
 Learning:
 
-- `tasks/task-20260716-154508-902185-learning/evidence/evidence.yaml`
-- `tasks/task-20260716-154508-902185-learning/analysis/analysis.yaml`
-- `tasks/task-20260716-154508-902185-learning/analysis/learning-summary.yaml`
+- `tasks/<learning-task>/evidence/evidence.yaml`
+- `tasks/<learning-task>/analysis/analysis.yaml`
+- `tasks/<learning-task>/analysis/learning-summary.yaml`
 
 Learning batch:
 
-- `tasks/task-20260716-154824-742072-learning-batch/evidence/batch-evidence-index.json`
-- `tasks/task-20260716-154824-742072-learning-batch/analysis/batch-analysis-index.json`
-- `tasks/task-20260716-154824-742072-learning-batch/analysis/cross-sample-analysis.yaml`
-- `tasks/task-20260716-154824-742072-learning-batch/analysis/batch-learning-summary.yaml`
+- `tasks/<learning-batch-task>/evidence/batch-evidence-index.json`
+- `tasks/<learning-batch-task>/analysis/batch-analysis-index.json`
+- `tasks/<learning-batch-task>/analysis/cross-sample-analysis.yaml`
+- `tasks/<learning-batch-task>/analysis/batch-learning-summary.yaml`
 
 Generation:
 
-- `tasks/task-20260716-155248-641568-generation/content/generation-context.yaml`
-- `tasks/task-20260716-155248-641568-generation/content/topic-candidates.json`
-- `tasks/task-20260716-155248-641568-generation/content/revisions/revision-001/content-package.yaml`
-- `tasks/task-20260716-155248-641568-generation/content/revisions/revision-002/content-package.yaml`
-- `tasks/task-20260716-155248-641568-generation/content/content-package.yaml`
+- `tasks/<generation-task>/content/generation-context.yaml`
+- `tasks/<generation-task>/content/topic-candidates.json`
+- `tasks/<generation-task>/content/revisions/revision-001/content-package.yaml`
+- `tasks/<generation-task>/content/revisions/revision-002/content-package.yaml`
+- `tasks/<generation-task>/content/content-package.yaml`
 
 ## 6. Failure Scenarios
 
@@ -296,8 +296,8 @@ The three main Mock workflows completed end to end, failure sampling behaved cor
 
 ## 10. Stage 21.1 Verification Addendum
 
-- CLI regression task: `tasks/task-20260716-164457-469274-generation`
-- Full generation regression task: `tasks/task-20260716-164619-248909-generation`
+- CLI regression task: `tasks/<generation-cli-regression-task>`
+- Full generation regression task: `tasks/<generation-full-regression-task>`
 - Other same-class gate review:
   - `sample_selection`: protected by generic waiting-state rejection and `resume` requires `select-samples`.
   - `topic_selection`: protected by generic waiting-state rejection and `resume` requires `select-topic`.

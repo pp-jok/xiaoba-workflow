@@ -8,10 +8,15 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from urllib.parse import urlsplit, urlunsplit
 
+from . import config as local_config
+from . import locks
+
 
 LOG_LIMIT = 64 * 1024
 CONTRACT_VERSION = "1.0"
 SUPPORTED_OPERATIONS = ("collect_note", "collect_profile", "collect_posted_notes")
+OPTIONAL_OPERATIONS = ("collect_comments", "collect_transcript")
+ALL_OPERATIONS = SUPPORTED_OPERATIONS + OPTIONAL_OPERATIONS
 
 
 class LingzaoError(Exception):
@@ -25,10 +30,11 @@ def now_iso() -> str:
 
 
 def write_json_atomic(path: Path, payload: Dict[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_file = path.with_name("." + path.name + ".tmp")
-    temp_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temp_file.replace(path)
+    with locks.file_lock(path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_file = path.with_name("." + path.name + ".tmp")
+        temp_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        temp_file.replace(path)
 
 
 def read_json(path: Path) -> Dict[str, object]:
@@ -37,14 +43,17 @@ def read_json(path: Path) -> Dict[str, object]:
 
 def provider_config(root: Path) -> Dict[str, object]:
     config = read_workflow_lingzao_config(root / "workflow.yaml")
-    provider = os.environ.get("XIAOBA_LINGZAO_PROVIDER") or str(config.get("provider") or "mock")
+    local = local_config.provider_settings(root, "lingzao")
+    provider = os.environ.get("XIAOBA_LINGZAO_PROVIDER") or str(local.get("mode") or config.get("provider") or "mock")
     command = config.get("command")
+    if local.get("command"):
+        command = local.get("command")
     if os.environ.get("XIAOBA_LINGZAO_COMMAND"):
         try:
             command = json.loads(os.environ["XIAOBA_LINGZAO_COMMAND"])
         except json.JSONDecodeError as error:
             raise LingzaoError("configuration_error", "XIAOBA_LINGZAO_COMMAND must be a JSON array: " + str(error))
-    timeout = os.environ.get("XIAOBA_LINGZAO_TIMEOUT") or config.get("timeout_seconds") or 300
+    timeout = os.environ.get("XIAOBA_LINGZAO_TIMEOUT") or local.get("timeout_seconds") or config.get("timeout_seconds") or 300
     try:
         timeout_seconds = float(timeout)
     except (TypeError, ValueError):
@@ -57,7 +66,7 @@ def provider_config(root: Path) -> Dict[str, object]:
         "provider": provider,
         "command": command,
         "timeout_seconds": timeout_seconds,
-        "workdir": config.get("workdir"),
+        "workdir": local.get("workdir") or config.get("workdir"),
     }
 
 
@@ -136,6 +145,11 @@ def doctor(root: Path) -> List[str]:
     messages.append("command: configured")
     messages.append("contract_version: " + CONTRACT_VERSION)
     messages.append("operations: " + ", ".join(str(item) for item in operations))
+    optional = [operation for operation in OPTIONAL_OPERATIONS if operation in operations]
+    if optional:
+        messages.append("optional_operations: " + ", ".join(optional))
+    if "unsupported_outputs" in capabilities:
+        messages.append("unsupported_outputs: " + ", ".join(str(item) for item in capabilities.get("unsupported_outputs") or []))
     if "requires_auth" in capabilities:
         messages.append("requires_auth: " + str(capabilities.get("requires_auth")))
     if capabilities.get("login_state"):
@@ -303,7 +317,179 @@ def run_real(root: Path, task_dir: Path, target_dir: Path, task: Dict[str, str],
     invocation["contract_version"] = CONTRACT_VERSION
     invocation["runner_manifest"] = relative_raw_file(target_dir, "external/runner-manifest.json")
     write_json_atomic(target_dir / "invocation.json", invocation)
+    record_operation_invocation(target_dir, operation, "succeeded", invocation, wrote, [], None, None)
     cleanup_temp(temp_dir)
+
+
+def collect_optional(root: Path, task_dir: Path, task: Dict[str, str], state: Dict[str, object], source_url: str, operations: List[str]) -> None:
+    target_dir = task_dir / "raw" / "lingzao"
+    note_path = target_dir / "note-detail.json"
+    if not note_path.is_file():
+        raise LingzaoError("incomplete_output", "note-detail.json is required before optional collection")
+    note = read_json(note_path)
+    config = provider_config(root)
+    for operation in operations:
+        if operation not in OPTIONAL_OPERATIONS:
+            raise LingzaoError("configuration_error", "unsupported optional Lingzao operation: " + operation)
+        existing = note.get("comments" if operation == "collect_comments" else "transcript") or {}
+        if existing.get("status") in ("available", "skipped", "failed"):
+            continue
+        started_at = now_iso()
+        try:
+            adapted, invocation = run_real_operation(root, task_dir, target_dir, task, state, operation, source_url, config)
+            if operation == "collect_comments":
+                note["comments"] = adapted["comments.json"]
+                output_refs = ["raw/lingzao/comments.json"]
+            else:
+                note["transcript"] = adapted["transcript.json"]
+                output_refs = ["raw/lingzao/transcript.json"]
+            record_operation_invocation(target_dir, operation, "succeeded", invocation, output_refs, [], None, None)
+        except LingzaoError as error:
+            status_payload = {"status": "failed", "items": [], "error": str(error)} if operation == "collect_comments" else {"status": "failed", "text": None, "error": str(error)}
+            if operation == "collect_comments":
+                note["comments"] = status_payload
+            else:
+                note["transcript"] = status_payload
+            record_operation_invocation(
+                target_dir,
+                operation,
+                "failed",
+                {
+                    "operation": operation,
+                    "started_at": started_at,
+                    "completed_at": now_iso(),
+                    "warnings": [str(error)],
+                },
+                [],
+                [str(error)],
+                error.kind,
+                None,
+            )
+    note.setdefault("coverage", {})["video_file"] = "unsupported"
+    write_json_atomic(note_path, note)
+
+
+def run_real_operation(
+    root: Path,
+    task_dir: Path,
+    target_dir: Path,
+    task: Dict[str, str],
+    state: Dict[str, object],
+    operation: str,
+    source_url: str,
+    config: Dict[str, object],
+) -> tuple:
+    run_id = uuid.uuid4().hex[:12]
+    temp_dir = task_dir / ".tmp" / ("lingzao-" + operation + "-" + run_id)
+    external_tmp = temp_dir / "external"
+    external_tmp.mkdir(parents=True, exist_ok=True)
+    started_at = now_iso()
+    result, args = run_runner_contract(root, target_dir, external_tmp, task, operation, source_url, config, None)
+    try:
+        validate_external_paths(external_tmp)
+        external_dir = target_dir / "external" / operation
+        if not external_dir.exists():
+            shutil.copytree(external_tmp, external_dir)
+        contract = read_runner_contract(external_tmp, operation, source_url)
+        adapted = adapt_external_contract(contract["result"], contract["manifest"], operation, source_url, None)
+    finally:
+        cleanup_temp(temp_dir)
+    completed_at = now_iso()
+    for name, payload in adapted.items():
+        write_json_atomic(target_dir / name, payload)
+    invocation = manifest(
+        provider="real",
+        task=task,
+        state=state,
+        operation=operation,
+        source=source_url,
+        sample_id=None,
+        started_at=started_at,
+        completed_at=completed_at,
+        exit_code=result.returncode,
+        raw_files=[relative_raw_file(target_dir, name) for name in adapted] + [relative_raw_file(target_dir, "invocations/" + invocation_file_name(operation))],
+        command=sanitize_command(args),
+        stdout_file=relative_raw_file(target_dir, "execution-stdout.log"),
+        stderr_file=relative_raw_file(target_dir, "execution-stderr.log"),
+        warnings=[],
+    )
+    invocation["contract_version"] = CONTRACT_VERSION
+    invocation["runner_manifest"] = relative_raw_file(target_dir, "external/" + operation + "/runner-manifest.json")
+    write_json_atomic(target_dir / "invocations" / invocation_file_name(operation), invocation)
+    return adapted, invocation
+
+
+def record_skipped_optional(target_dir: Path, operations: List[str], reason: str, decision_ref: str) -> None:
+    note_path = target_dir / "note-detail.json"
+    note = read_json(note_path)
+    for operation in operations:
+        if operation == "collect_comments":
+            note["comments"] = {"status": "skipped", "items": [], "reason": reason}
+        elif operation == "collect_transcript":
+            note["transcript"] = {"status": "skipped", "text": None, "reason": reason}
+        record_operation_invocation(
+            target_dir,
+            operation,
+            "skipped",
+            {"operation": operation, "started_at": now_iso(), "completed_at": now_iso(), "warnings": []},
+            [],
+            [],
+            None,
+            decision_ref,
+            skipped_reason=reason,
+        )
+    note.setdefault("coverage", {})["video_file"] = "unsupported"
+    write_json_atomic(note_path, note)
+
+
+def record_operation_invocation(
+    target_dir: Path,
+    operation: str,
+    status: str,
+    invocation: Dict[str, object],
+    output_refs: List[str],
+    warnings: List[str],
+    failure_kind: Optional[str],
+    cost_confirmation_ref: Optional[str],
+    skipped_reason: Optional[str] = None,
+) -> None:
+    invocations_dir = target_dir / "invocations"
+    invocations_dir.mkdir(parents=True, exist_ok=True)
+    invocation_path = invocations_dir / invocation_file_name(operation)
+    if not invocation_path.exists():
+        write_json_atomic(invocation_path, invocation)
+    index_path = invocations_dir / "index.json"
+    if index_path.exists():
+        index = read_json(index_path)
+    else:
+        index = {"contract_version": CONTRACT_VERSION, "invocations": []}
+    entries = [item for item in index.get("invocations", []) if item.get("operation") != operation]
+    entries.append(
+        {
+            "operation": operation,
+            "status": status,
+            "output_refs": output_refs,
+            "started_at": invocation.get("started_at"),
+            "completed_at": invocation.get("completed_at"),
+            "warnings": warnings or invocation.get("warnings") or [],
+            "skipped_reason": skipped_reason,
+            "failure_kind": failure_kind,
+            "cost_confirmation_ref": cost_confirmation_ref,
+        }
+    )
+    order = {"collect_note": 0, "collect_comments": 1, "collect_transcript": 2}
+    index["invocations"] = sorted(entries, key=lambda item: order.get(str(item.get("operation")), 99))
+    write_json_atomic(index_path, index)
+
+
+def invocation_file_name(operation: str) -> str:
+    if operation == "collect_note":
+        return "note-detail.json"
+    if operation == "collect_comments":
+        return "comments.json"
+    if operation == "collect_transcript":
+        return "transcript.json"
+    return operation + ".json"
 
 
 def run_real_profile_bundle(root: Path, task_dir: Path, target_dir: Path, task: Dict[str, str], state: Dict[str, object], source_url: str, config: Dict[str, object]) -> None:
@@ -375,7 +561,7 @@ def run_runner_contract(root: Path, target_dir: Path, external_tmp: Path, task: 
     command = list(config.get("command") or [])
     if not command:
         raise LingzaoError("configuration_error", "real command is required")
-    if operation not in SUPPORTED_OPERATIONS:
+    if operation not in ALL_OPERATIONS:
         raise LingzaoError("configuration_error", "unsupported Lingzao operation: " + operation)
     if not is_valid_url(source_url):
         raise LingzaoError("configuration_error", "Lingzao source must be an absolute http(s) URL")
@@ -422,6 +608,10 @@ def expected_files(operation: str) -> List[str]:
         return ["profile.json", "posted-notes.json"]
     if operation == "collect_posted_notes":
         return ["posted-notes.json"]
+    if operation == "collect_comments":
+        return ["comments.json"]
+    if operation == "collect_transcript":
+        return ["transcript.json"]
     raise LingzaoError("configuration_error", "unsupported Lingzao operation: " + operation)
 
 
@@ -501,6 +691,16 @@ def adapt_external_contract(result: Dict[str, object], runner_manifest: Dict[str
             "captured_at": runner_manifest.get("completed_at"),
             "notes": internal_notes,
         }}
+    if operation == "collect_comments":
+        comments = result.get("comments")
+        if not isinstance(comments, dict):
+            raise LingzaoError("contract_adaptation_error", "result.comments is required")
+        return {"comments.json": comments}
+    if operation == "collect_transcript":
+        transcript = result.get("transcript")
+        if not isinstance(transcript, dict):
+            raise LingzaoError("contract_adaptation_error", "result.transcript is required")
+        return {"transcript.json": transcript}
     raise LingzaoError("configuration_error", "unsupported Lingzao operation: " + operation)
 
 

@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -9,10 +10,14 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 from . import analysis as analysis_module
 from . import batch as batch_module
+from . import config as local_config
 from . import generation as generation_module
+from . import generation_provider
 from . import learning_summary as learning_summary_module
 from . import lingzao as lingzao_module
+from . import locks
 from . import personal_content as personal_content_module
+from . import presentation
 
 
 REQUIRED_DIRECTORIES = (
@@ -34,20 +39,28 @@ REQUIRED_FILES = (
     "prompts/hot-learning-cross-sample.md",
     "prompts/personal-content-governance.md",
     "prompts/personal-content-generation.md",
+    "scripts/hot_learning_runner.py",
+    "scripts/lingzao_runner.py",
+    "xiaoba.local.example.yaml",
+    "USER_MANUAL.md",
+    "CAPABILITY_MATRIX.md",
+    "CHANGELOG.md",
 )
 
-TASK_TYPES = ("learning", "learning_batch", "generation")
+TASK_TYPES = ("learning", "learning_batch", "generation", "post_publish_review")
 
 NEXT_STAGE_BY_TYPE = {
     "learning": "evidence_collection",
     "learning_batch": "benchmark_screening",
     "generation": "context_assembly",
+    "post_publish_review": "review_analysis",
 }
 
 GOAL_BY_TYPE = {
     "learning": "持续学习并沉淀，不生成帖子",
     "learning_batch": "批量学习并沉淀，不生成帖子",
     "generation": "按需生成内容，等待用户审阅",
+    "post_publish_review": "复盘已发布内容，只生成建议，不自动修改规则",
 }
 
 TASK_SUBDIRECTORIES = (
@@ -57,6 +70,7 @@ TASK_SUBDIRECTORIES = (
     "evidence",
     "analysis",
     "governance",
+    "feedback",
     "content",
 )
 
@@ -66,6 +80,9 @@ MANUAL_ADVANCE_PROHIBITED = {
     ("generation", "review"): "Stage review requires review-content; it cannot be advanced manually.",
     ("learning_batch", "sample_selection"): "Stage sample_selection requires select-samples; it cannot be advanced manually.",
 }
+
+COST_DECISION_FILE = "raw/lingzao/external-cost-decision.json"
+LINGZAO_COLLECTION_POLICIES = ("ask", "always", "never")
 
 
 def validate_project(root: Path) -> List[str]:
@@ -96,10 +113,80 @@ def doctor(root: Path, skill: str = "lingzao") -> List[str]:
     raise WorkflowError("unsupported doctor skill: " + skill)
 
 
+def doctor_all(root: Path) -> List[str]:
+    rows = []
+    rows.append(("Xiaoba 核心工作流", "正常", "Mock 默认可运行", "python3 -m xiaoba_workflow validate-project"))
+    rows.append(provider_doctor_row(root, "Lingzao", "lingzao"))
+    rows.append(hot_learning_doctor_row(root))
+    rows.append(provider_doctor_row(root, "Personal Content", "personal-content"))
+    rows.append(generation_doctor_row(root))
+    rows.append(("自动发布", "不支持", "approve 只完成本地审核，不发布", "手工发布后再做复盘"))
+    lines = ["Xiaoba doctor --all", ""]
+    for name, status, detail, next_step in rows:
+        lines.append("%-28s %s" % (name, status))
+        lines.append("  说明：" + detail)
+        lines.append("  下一步：" + next_step)
+    return lines
+
+
+def provider_doctor_row(root: Path, display_name: str, skill: str) -> Tuple[str, str, str, str]:
+    try:
+        messages = doctor(root, skill)
+    except Exception as error:
+        return (display_name, "未就绪", str(error), "python3 -m xiaoba_workflow doctor --skill " + skill)
+    provider = "configured"
+    for message in messages:
+        if message.startswith("provider:"):
+            provider = message.split(":", 1)[1].strip()
+            break
+    return (display_name, "可用", "provider=" + provider, "按需运行真实或 Mock 流程")
+
+
+def hot_learning_doctor_row(root: Path) -> Tuple[str, str, str, str]:
+    runner = root / "scripts" / "hot_learning_runner.py"
+    if not runner.is_file():
+        return ("Hot Learning", "未就绪", "缺少 scripts/hot_learning_runner.py", "补齐 runner")
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(runner), "--capabilities"],
+            check=False,
+            capture_output=True,
+            text=True,
+            shell=False,
+            timeout=10,
+            cwd=str(root),
+        )
+    except subprocess.TimeoutExpired:
+        return ("Hot Learning", "未就绪", "capabilities 超时", "检查 runner")
+    if completed.returncode != 0:
+        return ("Hot Learning", "未就绪", completed.stderr.strip() or completed.stdout.strip(), "检查 runner")
+    try:
+        caps = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        return ("Hot Learning", "未就绪", "capabilities 非 JSON", "检查 runner")
+    operations = caps.get("operations") if isinstance(caps, dict) else []
+    if not isinstance(operations, list) or "analyze_single" not in operations:
+        return ("Hot Learning", "未就绪", "缺少 analyze_single", "检查 runner")
+    return ("Hot Learning", "Mock / Contract", "operations=" + ", ".join(str(item) for item in operations), "默认 mock，可配置 codex_manual/external")
+
+
+def generation_doctor_row(root: Path) -> Tuple[str, str, str, str]:
+    try:
+        messages = generation_provider.doctor(root)
+    except Exception as error:
+        return ("内容生成 Provider", "未就绪", str(error), "查看 xiaoba.local.example.yaml")
+    provider = "mock"
+    for message in messages:
+        if message.startswith("provider:"):
+            provider = message.split(":", 1)[1].strip()
+    status = "可用" if provider == "mock" else "Contract"
+    return ("内容生成 Provider", status, "provider=" + provider, "generation approve 不发布")
+
+
 def create_task(root: Path, task_type: str, source_url: Optional[str], brief: Optional[str] = None) -> Path:
     if task_type not in TASK_TYPES:
         raise ValueError("unsupported task type: " + task_type)
-    if task_type in ("learning", "learning_batch") and not source_url:
+    if task_type in ("learning", "learning_batch", "post_publish_review") and not source_url:
         raise ValueError("--source-url is required for %s tasks" % task_type)
 
     tasks_root = root / "tasks"
@@ -157,12 +244,13 @@ def write_text_atomic(path: Path, content: str) -> None:
 
 
 def write_json_atomic(path: Path, payload: Dict[str, object]) -> None:
-    temp_file = path.with_name("." + path.name + ".tmp")
-    temp_file.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    temp_file.replace(path)
+    with locks.file_lock(path):
+        temp_file = path.with_name("." + path.name + ".tmp")
+        temp_file.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        temp_file.replace(path)
 
 
 def write_generation_brief(task_dir: Path, task_id: str, brief: str, created_at: Optional[str] = None) -> None:
@@ -442,13 +530,14 @@ def read_state_yaml(path: Path) -> Dict[str, object]:
 def write_state_atomic(task_dir: Path, state: Dict[str, object]) -> None:
     state_file = task_dir / "state.yaml"
     temp_file = task_dir / ".state.yaml.tmp"
-    try:
-        temp_file.write_text(render_state_yaml(state), encoding="utf-8")
-        temp_file.replace(state_file)
-    except Exception as error:
-        if temp_file.is_file():
-            temp_file.unlink()
-        raise WorkflowError("Failed to write state.yaml: " + str(error))
+    with locks.file_lock(state_file):
+        try:
+            temp_file.write_text(render_state_yaml(state), encoding="utf-8")
+            temp_file.replace(state_file)
+        except Exception as error:
+            if temp_file.is_file():
+                temp_file.unlink()
+            raise WorkflowError("Failed to write state.yaml: " + str(error))
 
 
 class WorkflowError(Exception):
@@ -492,6 +581,9 @@ def resume_task(root: Path, task_dir: Path) -> Dict[str, object]:
         raise WorkflowError("topic_selection requires select-topic")
     if task.get("task_type") == "generation" and stage == "review":
         raise WorkflowError("review requires review-content")
+    waiting = state.get("waiting_for") if isinstance(state.get("waiting_for"), dict) else {}
+    if waiting.get("type") == "external_cost_confirmation":
+        raise WorkflowError("external_cost_confirmation requires confirm-external-cost")
     stage_config = get_stage_config(workflow, stage)
     if not stage_config.get("human_gate"):
         raise WorkflowError("Current stage is not a human gate: " + stage)
@@ -667,6 +759,79 @@ def review_content(root: Path, task_dir: Path, decision: str, feedback: Optional
         write_state_atomic(task_dir, state)
         return state
     return move_to_next_stage(task_dir, workflow, state)
+
+
+def confirm_feedback_rule(task_dir: Path, candidate_id: str, decision: str) -> Dict[str, object]:
+    task, state = read_task_files(task_dir)
+    if task.get("task_type") != "generation":
+        raise WorkflowError("confirm-feedback-rule only supports generation tasks")
+    if decision not in ("confirm", "reject", "current_only"):
+        raise WorkflowError("decision must be confirm, reject, or current_only")
+    candidates_path = task_dir / "feedback" / "governance-candidates.yaml"
+    if not candidates_path.is_file():
+        raise WorkflowError("feedback governance candidates are missing")
+    payload = read_json_file(candidates_path)
+    candidate = None
+    for item in payload.get("candidates") or []:
+        if item.get("candidate_id") == candidate_id:
+            candidate = item
+            break
+    if candidate is None:
+        raise WorkflowError("unknown feedback candidate: " + candidate_id)
+    result_path = task_dir / "feedback" / (candidate_id + "-confirmation.json")
+    if result_path.exists():
+        existing = read_json_file(result_path)
+        if existing.get("decision") != decision:
+            raise WorkflowError("feedback candidate decision already exists")
+        return state
+    result = {
+        "task_id": task["task_id"],
+        "candidate_id": candidate_id,
+        "decision": decision,
+        "candidate_snapshot": candidate,
+        "auto_activated": False,
+        "personal_content_called": False,
+        "published": False,
+        "confirmed_at": now_iso(),
+    }
+    write_json_atomic(result_path, result)
+    return state
+
+
+def confirm_external_cost(task_dir: Path, decision: str) -> Dict[str, object]:
+    task, state = read_task_files(task_dir)
+    if decision not in ("confirm", "skip"):
+        raise WorkflowError("decision must be confirm or skip")
+    waiting = state.get("waiting_for") if isinstance(state.get("waiting_for"), dict) else {}
+    if state.get("status") != "waiting_for_user" or waiting.get("type") != "external_cost_confirmation":
+        raise WorkflowError("task is not waiting for external_cost_confirmation")
+    path = task_dir / COST_DECISION_FILE
+    if path.exists():
+        existing = read_json_file(path)
+        if existing.get("decision") != decision:
+            raise WorkflowError("external cost decision already exists")
+    else:
+        write_json_atomic(
+            path,
+            {
+                "task_id": task["task_id"],
+                "skill": waiting.get("skill"),
+                "operations": split_operation_list(str(waiting.get("operations") or "")),
+                "source_url": waiting.get("source_url"),
+                "decision": decision,
+                "possible_cost": waiting.get("possible_cost"),
+                "confirmed_at": now_iso(),
+            },
+        )
+    state["status"] = "running"
+    state["waiting_for"] = None
+    state["last_updated_at"] = now_iso()
+    write_state_atomic(task_dir, state)
+    return state
+
+
+def split_operation_list(value: str) -> List[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
 
 
 def prepare_governance(root: Path, task_dir: Path, profile_id: str) -> Dict[str, object]:
@@ -1347,6 +1512,37 @@ def run_task(root: Path, task_dir: Path) -> Dict[str, object]:
     return updated
 
 
+def run_until_gate(root: Path, task_dir: Path, max_steps: int = 20) -> Tuple[Dict[str, object], List[str]]:
+    if max_steps < 1:
+        raise WorkflowError("--max-steps must be at least 1")
+    messages: List[str] = []
+    latest_state: Dict[str, object] = {}
+    for _ in range(max_steps):
+        task, state, _source_url = read_task_context(task_dir)
+        workflows = load_workflows(root / "workflow.yaml")
+        workflow = get_task_workflow(workflows, task["task_type"])
+        latest_state = state
+        if state.get("status") in ("waiting_for_user", "blocked", "completed"):
+            messages.append(presentation.next_action(task, state))
+            return state, messages
+        messages.append(presentation.render_stage_intro(task, state, workflows))
+        try:
+            updated = run_task(root, task_dir)
+        except WorkflowError:
+            _task_after, state_after = read_task_files(task_dir)
+            if state_after.get("status") in ("waiting_for_user", "blocked"):
+                messages.append(presentation.render_stage_done(task, state_after, str(state.get("current_stage"))))
+                return state_after, messages
+            raise
+        executed_stage = str(updated.get("_executed_stage", state.get("current_stage")))
+        latest_state = updated
+        messages.append(presentation.render_stage_done(task, updated, executed_stage))
+        if updated.get("status") in ("waiting_for_user", "blocked", "completed"):
+            return updated, messages
+    messages.append("已达到本次最大执行步数。")
+    return latest_state, messages
+
+
 def get_stage_executor(task_type: str, stage: str):
     executors = {
         ("learning", "task_intake"): execute_learning_task_intake,
@@ -1368,8 +1564,80 @@ def get_stage_executor(task_type: str, stage: str):
         ("generation", "context_assembly"): execute_generation_context_assembly,
         ("generation", "topic_generation"): execute_generation_topic_generation,
         ("generation", "content_generation"): execute_generation_content_generation,
+        ("post_publish_review", "task_intake"): execute_post_publish_review_task_intake,
+        ("post_publish_review", "review_analysis"): execute_post_publish_review_analysis,
     }
     return executors.get((task_type, stage))
+
+
+def execute_post_publish_review_task_intake(
+    _root: Path,
+    _task_dir: Path,
+    task: Dict[str, str],
+    state: Dict[str, object],
+    source_url: Optional[str],
+    workflow: Dict[str, object],
+) -> Dict[str, object]:
+    if task.get("task_type") != "post_publish_review":
+        raise WorkflowError("post_publish_review task_intake requires post_publish_review task")
+    if not source_url:
+        raise WorkflowError("post_publish_review requires a published public URL")
+    return move_to_next_stage(_task_dir, workflow, state)
+
+
+def execute_post_publish_review_analysis(
+    _root: Path,
+    task_dir: Path,
+    task: Dict[str, str],
+    state: Dict[str, object],
+    source_url: Optional[str],
+    workflow: Dict[str, object],
+) -> Dict[str, object]:
+    try:
+        if not source_url:
+            raise WorkflowError("post_publish_review requires a published public URL")
+        path = task_dir / "analysis" / "post-publish-review.yaml"
+        if path.exists():
+            payload = read_json_file(path)
+        else:
+            payload = build_post_publish_review(task, source_url)
+            write_json_atomic(path, payload)
+        validate_post_publish_review(payload, task)
+    except Exception as error:
+        block_stage_failure(task_dir, state, str(error))
+        raise WorkflowError(str(error))
+    return move_to_next_stage(task_dir, workflow, state)
+
+
+def build_post_publish_review(task: Dict[str, str], source_url: str) -> Dict[str, object]:
+    return {
+        "task_id": task["task_id"],
+        "review_id": "post-review-" + task["task_id"].replace("task-", ""),
+        "source": {"published_url": source_url},
+        "used_rules": [],
+        "mechanism_assessment": {
+            "possibly_effective": [],
+            "possibly_ineffective": [],
+            "data_insufficient": ["需要用户补充 24h/48h/7d 数据或后台截图。"],
+            "external_variables": [],
+        },
+        "rule_status_suggestions": [],
+        "requires_user_confirmation": True,
+        "auto_changed_rule_status": False,
+        "published": False,
+        "created_at": now_iso(),
+    }
+
+
+def validate_post_publish_review(payload: Dict[str, object], task: Dict[str, str]) -> None:
+    if payload.get("task_id") != task["task_id"]:
+        raise WorkflowError("post publish review task_id mismatch")
+    if not (payload.get("source") or {}).get("published_url"):
+        raise WorkflowError("post publish review source URL is required")
+    if payload.get("auto_changed_rule_status") is not False:
+        raise WorkflowError("post publish review must not change rule status automatically")
+    if payload.get("published") is not False:
+        raise WorkflowError("post publish review must not publish content")
 
 
 def execute_generation_task_intake(
@@ -1444,7 +1712,7 @@ def execute_generation_content_generation(
         validate_generation_context(context, task)
         candidates = read_json_file(task_dir / "content" / "topic-candidates.json")
         validate_topic_candidates(candidates, task, context)
-        generation_module.run_content_generation(task_dir, task, personal_content_module.WORKSPACE_REF)
+        generation_module.run_content_generation(task_dir, task, personal_content_module.WORKSPACE_REF, root=_root)
     except Exception as error:
         block_stage_failure(task_dir, state, str(error))
         raise WorkflowError(str(error))
@@ -1640,11 +1908,123 @@ def execute_learning_evidence_collection(
     try:
         if not source_url:
             raise WorkflowError("learning evidence_collection requires a source URL")
-        lingzao_module.collect_note(root, task_dir, task, state, source_url)
+        provider = lingzao_module.provider_config(root)["provider"]
+        if provider == "mock":
+            lingzao_module.collect_note(root, task_dir, task, state, source_url)
+            return move_to_next_stage(task_dir, workflow, state)
+        note_path = task_dir / "raw" / "lingzao" / "note-detail.json"
+        ensure_lingzao_note_raw_complete(task_dir / "raw" / "lingzao")
+        if not note_path.is_file():
+            lingzao_module.collect_note(root, task_dir, task, state, source_url)
+        plan = optional_lingzao_collection_plan(root, source_url)
+        if plan["skipped"]:
+            lingzao_module.record_skipped_optional(
+                task_dir / "raw" / "lingzao",
+                list(plan["skipped"]),
+                "skipped by local Lingzao collection policy",
+                "xiaoba.local.yaml",
+            )
+        operations = list(plan["ask"] or [])
+        if plan["auto"]:
+            lingzao_module.collect_optional(root, task_dir, task, state, source_url, list(plan["auto"]))
+            enforce_required_lingzao_outputs(task_dir, plan)
+        if operations:
+            decision_path = task_dir / COST_DECISION_FILE
+            if not decision_path.is_file():
+                state["status"] = "waiting_for_user"
+                state["waiting_for"] = {
+                    "type": "external_cost_confirmation",
+                    "skill": "Lingzao",
+                    "operations": ",".join(operations),
+                    "source_url": source_url,
+                    "reason": "补充评论需求和视频口播证据",
+                    "possible_cost": "Lingzao credits",
+                }
+                state["last_updated_at"] = now_iso()
+                write_state_atomic(task_dir, state)
+                return state
+            decision = read_json_file(decision_path)
+            if decision.get("decision") == "skip":
+                lingzao_module.record_skipped_optional(
+                    task_dir / "raw" / "lingzao",
+                    operations,
+                    "user skipped optional paid Lingzao operations",
+                    COST_DECISION_FILE,
+                )
+            elif decision.get("decision") == "confirm":
+                lingzao_module.collect_optional(root, task_dir, task, state, source_url, operations)
+                enforce_required_lingzao_outputs(task_dir, plan)
+            else:
+                raise WorkflowError("invalid external cost decision")
     except Exception as error:
         block_stage_failure(task_dir, state, str(error))
         raise WorkflowError(str(error))
     return move_to_next_stage(task_dir, workflow, state)
+
+
+def ensure_lingzao_note_raw_complete(raw_dir: Path) -> None:
+    note_path = raw_dir / "note-detail.json"
+    invocation_path = raw_dir / "invocation.json"
+    if note_path.exists() != invocation_path.exists():
+        raise WorkflowError("incomplete_output: Lingzao note raw output is incomplete")
+
+
+def optional_lingzao_collection_plan(root: Path, source_url: str) -> Dict[str, object]:
+    local = local_config.load_local_config(root)
+    learning = local.get("learning") if isinstance(local.get("learning"), dict) else {}
+    collect_comments = lingzao_policy("comments", learning.get("collect_comments", "ask"))
+    collect_transcript = lingzao_policy("transcript", learning.get("collect_transcript", "ask"))
+    allow_auto_paid = bool_from_env(
+        "XIAOBA_LINGZAO_ALLOW_AUTO_PAID_CALLS",
+        bool(learning.get("allow_auto_paid_calls", False)),
+    )
+    transcript_required = bool_from_env(
+        "XIAOBA_LINGZAO_TRANSCRIPT_REQUIRED",
+        bool(learning.get("transcript_required", False)),
+    )
+    desired: List[Tuple[str, str]] = [("collect_comments", collect_comments)]
+    if is_video_source(source_url):
+        desired.append(("collect_transcript", collect_transcript))
+    plan = {"ask": [], "auto": [], "skipped": [], "required": []}
+    for operation, policy in desired:
+        if policy == "never":
+            plan["skipped"].append(operation)
+        elif policy == "always" and allow_auto_paid:
+            plan["auto"].append(operation)
+        else:
+            plan["ask"].append(operation)
+    if transcript_required and is_video_source(source_url):
+        plan["required"].append("collect_transcript")
+    return plan
+
+
+def lingzao_policy(name: str, value: object) -> str:
+    env_name = "XIAOBA_LINGZAO_COLLECT_" + name.upper()
+    configured = os.environ.get(env_name, str(value or "ask")).strip().lower()
+    if configured not in LINGZAO_COLLECTION_POLICIES:
+        raise WorkflowError("%s must be one of: %s" % (env_name, ", ".join(LINGZAO_COLLECTION_POLICIES)))
+    return configured
+
+
+def bool_from_env(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def is_video_source(source_url: str) -> bool:
+    return "type=video" in source_url or "video" in source_url
+
+
+def enforce_required_lingzao_outputs(task_dir: Path, plan: Dict[str, object]) -> None:
+    required = plan.get("required") or []
+    if "collect_transcript" not in required:
+        return
+    note = read_json_file(task_dir / "raw" / "lingzao" / "note-detail.json")
+    transcript = note.get("transcript") if isinstance(note.get("transcript"), dict) else {}
+    if transcript.get("status") != "available" and transcript.get("status") != "manually_provided":
+        raise WorkflowError("Lingzao transcript is required but status is %s" % transcript.get("status"))
 
 
 def execute_learning_evidence_normalization(
@@ -3482,6 +3862,7 @@ def validate_generation_context(context: Dict[str, object], task: Dict[str, str]
 
 
 def run_generation_topic_generation(task_dir: Path, task: Dict[str, str]) -> None:
+    root = Path.cwd()
     context_path = task_dir / "content" / "generation-context.yaml"
     response_path = task_dir / "raw" / "personal-content" / "topic-generation-response.json"
     candidates_path = task_dir / "content" / "topic-candidates.json"
@@ -3494,16 +3875,34 @@ def run_generation_topic_generation(task_dir: Path, task: Dict[str, str]) -> Non
     if existing_count == 2:
         validate_topic_candidates(read_json_file(candidates_path), task, context)
         return
-    topics = build_topic_candidates(task, context)
-    response = {
-        "adapter": "mock_personal_content",
-        "mock": True,
-        "task_id": task["task_id"],
-        "operation": "generate_topic_candidates",
-        "workspace_ref": personal_content_module.WORKSPACE_REF,
-        "executed_at": now_iso(),
-        "candidates": topics["candidates"],
-    }
+    provider = generation_provider.provider_config(root)
+    if provider["provider"] == "external":
+        raw_dir = task_dir / "raw" / "generation-provider" / "topic-generation"
+        topics = generation_provider.external_generate_topics(root, task, context, raw_dir)
+        response = {
+            "adapter": "external_generation_provider",
+            "mock": False,
+            "task_id": task["task_id"],
+            "operation": "generate_topic_candidates",
+            "contract_version": generation_provider.CONTRACT_VERSION,
+            "runner_output_dir": "raw/generation-provider/topic-generation",
+            "runner_manifest": "raw/generation-provider/topic-generation/runner-manifest.json",
+            "executed_at": now_iso(),
+            "candidates": topics["candidates"],
+            "published": False,
+        }
+    else:
+        topics = build_topic_candidates(task, context)
+        response = {
+            "adapter": "mock_personal_content" if provider["provider"] == "mock" else "codex_generation_provider",
+            "mock": provider["provider"] == "mock",
+            "task_id": task["task_id"],
+            "operation": "generate_topic_candidates",
+            "workspace_ref": personal_content_module.WORKSPACE_REF,
+            "executed_at": now_iso(),
+            "candidates": topics["candidates"],
+            "published": False,
+        }
     validate_topic_candidates(topics, task, context)
     write_json_atomic(response_path, response)
     write_json_atomic(candidates_path, topics)

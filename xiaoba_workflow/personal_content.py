@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
+from . import locks
+
 
 WORKSPACE_REF = "mock://personal-content/default"
 OPERATION = "create_or_match_candidate_mechanism"
@@ -868,12 +870,13 @@ def read_json(path: Path) -> Dict[str, object]:
 
 
 def write_json_atomic(path: Path, payload: Dict[str, object]) -> None:
-    temp_file = path.with_name("." + path.name + ".tmp")
-    temp_file.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    temp_file.replace(path)
+    with locks.file_lock(path):
+        temp_file = path.with_name("." + path.name + ".tmp")
+        temp_file.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        temp_file.replace(path)
 
 
 def relative_prompt_path(prompt_path: Path) -> str:

@@ -17,6 +17,10 @@ test = [
 [project.scripts]
 xiaoba-workflow = "xiaoba_workflow.cli:main"
 
+[tool.setuptools.packages.find]
+include = ["xiaoba_workflow*"]
+exclude = ["prompts*", "templates*", "tests*", "tasks*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

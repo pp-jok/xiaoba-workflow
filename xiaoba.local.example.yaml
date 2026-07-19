@@ -1,20 +1,18 @@
 providers:
   lingzao:
-    mode: mock
-    skill_root: /absolute/path/to/lingzao
+    mode: unavailable
     timeout_seconds: 300
 
   hot_learning:
-    mode: mock
+    mode: codex_manual
     command: []
     timeout_seconds: 300
 
   personal_content:
-    mode: mock
-    workspace: /absolute/path/to/personal-content-workspace
+    mode: unavailable
 
   generation:
-    mode: mock
+    mode: codex_manual
     command: []
     timeout_seconds: 300
 

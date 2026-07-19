@@ -107,7 +107,7 @@ def doctor(root: Path, skill: str = "lingzao") -> List[str]:
             raise WorkflowError(str(error))
     if skill in ("personal-content", "personal_content"):
         try:
-            return personal_content_module.doctor()
+            return personal_content_module.doctor(root)
         except personal_content_module.PersonalContentError as error:
             raise WorkflowError(str(error))
     raise WorkflowError("unsupported doctor skill: " + skill)
@@ -115,7 +115,7 @@ def doctor(root: Path, skill: str = "lingzao") -> List[str]:
 
 def doctor_all(root: Path) -> List[str]:
     rows = []
-    rows.append(("Xiaoba 核心工作流", "正常", "Mock 默认可运行", "python3 -m xiaoba_workflow validate-project"))
+    rows.append(("Xiaoba 核心工作流", "正常", "本地任务管理可运行", "xiaoba-workflow start"))
     rows.append(provider_doctor_row(root, "Lingzao", "lingzao"))
     rows.append(hot_learning_doctor_row(root))
     rows.append(provider_doctor_row(root, "Personal Content", "personal-content"))
@@ -183,7 +183,13 @@ def generation_doctor_row(root: Path) -> Tuple[str, str, str, str]:
     return ("内容生成 Provider", status, "provider=" + provider, "generation approve 不发布")
 
 
-def create_task(root: Path, task_type: str, source_url: Optional[str], brief: Optional[str] = None) -> Path:
+def create_task(
+    root: Path,
+    task_type: str,
+    source_url: Optional[str],
+    brief: Optional[str] = None,
+    execution_mode: str = "real",
+) -> Path:
     if task_type not in TASK_TYPES:
         raise ValueError("unsupported task type: " + task_type)
     if task_type in ("learning", "learning_batch", "post_publish_review") and not source_url:
@@ -203,7 +209,7 @@ def create_task(root: Path, task_type: str, source_url: Optional[str], brief: Op
 
         workflow = get_task_workflow(load_workflows(root / "workflow.yaml"), task_type)
         created_at = now_iso()
-        write_text(temp_dir / "task.yaml", render_task_yaml(task_id, task_type, source_url, created_at))
+        write_text(temp_dir / "task.yaml", render_task_yaml(task_id, task_type, source_url, created_at, execution_mode))
         state = initial_state(task_id, task_type, workflow, created_at)
         write_text(temp_dir / "state.yaml", render_state_yaml(state))
         write_text(temp_dir / "feedback.md", "")
@@ -269,7 +275,7 @@ def write_generation_brief(task_dir: Path, task_id: str, brief: str, created_at:
     write_json_atomic(task_dir / "content" / "generation-brief.json", payload)
 
 
-def render_task_yaml(task_id: str, task_type: str, source_url: Optional[str], created_at: str) -> str:
+def render_task_yaml(task_id: str, task_type: str, source_url: Optional[str], created_at: str, execution_mode: str = "real") -> str:
     if source_url:
         sources = "\nsources:\n  - type: url\n    value: %s\n" % yaml_scalar(source_url)
         source_type = "xhs_note"
@@ -280,6 +286,7 @@ def render_task_yaml(task_id: str, task_type: str, source_url: Optional[str], cr
     return (
         "task_id: {task_id}\n"
         "task_type: {task_type}\n\n"
+        "execution_mode: {execution_mode}\n\n"
         "source_type: {source_type}\n"
         "{sources}\n"
         "goal: {goal}\n\n"
@@ -290,6 +297,7 @@ def render_task_yaml(task_id: str, task_type: str, source_url: Optional[str], cr
     ).format(
         task_id=task_id,
         task_type=task_type,
+        execution_mode=execution_mode,
         source_type=source_type,
         sources=sources,
         goal=GOAL_BY_TYPE[task_type],
@@ -873,7 +881,7 @@ def propose_governance_rule(root: Path, task_dir: Path, proposal_id: str) -> Dic
         raise WorkflowError("propose-governance-rule requires a completed learning task")
     if not proposal_id or not proposal_id.strip():
         raise WorkflowError("proposal_id is required")
-    config = personal_content_module.provider_config()
+    config = personal_content_module.provider_config(root)
     if config.get("provider") != "real":
         raise WorkflowError("propose-governance-rule requires real Personal Content provider")
 
@@ -931,7 +939,7 @@ def confirm_governance_rule(root: Path, task_dir: Path, proposal_id: str, decisi
         raise WorkflowError("proposal_id is required")
     if decision not in ("confirm", "reject"):
         raise WorkflowError("decision must be confirm or reject")
-    config = personal_content_module.provider_config()
+    config = personal_content_module.provider_config(root)
     if config.get("provider") != "real":
         raise WorkflowError("confirm-governance-rule requires real Personal Content provider")
 
@@ -1692,7 +1700,7 @@ def execute_generation_topic_generation(
     workflow: Dict[str, object],
 ) -> Dict[str, object]:
     try:
-        run_generation_topic_generation(task_dir, task)
+        run_generation_topic_generation(_root, task_dir, task)
     except Exception as error:
         block_stage_failure(task_dir, state, str(error))
         raise WorkflowError(str(error))
@@ -2068,12 +2076,28 @@ def execute_learning_analysis(
         evidence = read_json_file(evidence_path)
         validate_evidence(evidence, evidence_path)
         ensure_evidence_is_analyzable(evidence)
+        if hot_learning_requires_manual_result(root, task, task_dir):
+            raise WorkflowError(
+                "Hot Learning is configured as codex_manual. Import a manual analysis with "
+                "import-hot-learning-analysis, configure an external provider, or run an explicit demo task."
+            )
         write_mock_hot_learning_raw(root, task_dir, task, state, evidence)
     except Exception as error:
         block_stage_failure(task_dir, state, str(error))
         raise WorkflowError(str(error))
 
     return move_to_next_stage(task_dir, workflow, state)
+
+
+def hot_learning_requires_manual_result(root: Path, task: Dict[str, str], task_dir: Path) -> bool:
+    if task.get("execution_mode") == "demo":
+        return False
+    raw_dir = task_dir / "raw" / "hot-learning"
+    if (raw_dir / "analysis.md").is_file() and (raw_dir / "invocation.json").is_file():
+        return False
+    settings = local_config.provider_settings(root, "hot_learning")
+    mode = str(settings.get("mode") or "mock")
+    return mode == "codex_manual"
 
 
 def execute_learning_analysis_normalization(
@@ -2113,10 +2137,15 @@ def import_hot_learning_analysis(root: Path, task_dir: Path, markdown_path: Path
 
     if task.get("task_type") != "learning":
         raise WorkflowError("Hot Learning analysis import only supports learning tasks")
-    if state.get("status") != "running":
-        raise WorkflowError("Task must be running to import Hot Learning analysis")
+    if state.get("status") not in ("running", "blocked"):
+        raise WorkflowError("Task must be running or blocked at analysis to import Hot Learning analysis")
     if state.get("current_stage") != "analysis":
         raise WorkflowError("Hot Learning analysis can only be imported at analysis stage")
+    if state.get("status") == "blocked":
+        waiting = state.get("waiting_for") if isinstance(state.get("waiting_for"), dict) else {}
+        reason = str(waiting.get("reason") or "")
+        if "Hot Learning" not in reason and "codex_manual" not in reason:
+            raise WorkflowError("Blocked task is not waiting for a Hot Learning manual analysis")
     if not markdown_path.is_file():
         raise FileNotFoundError("Markdown file not found: " + str(markdown_path))
 
@@ -2186,6 +2215,11 @@ def import_hot_learning_analysis(root: Path, task_dir: Path, markdown_path: Path
             raise
         raise WorkflowError(str(error))
 
+    if state.get("status") == "blocked":
+        state["status"] = "running"
+        state["waiting_for"] = None
+        state["last_updated_at"] = now_iso()
+        write_state_atomic(task_dir, state)
     return state
 
 
@@ -3521,7 +3555,9 @@ def run_generation_context_assembly(
         validate_generation_context(context, task, sources)
         return "complete"
 
-    config = personal_content_module.provider_config()
+    config = personal_content_module.provider_config(root)
+    if config.get("provider") == "unavailable":
+        raise WorkflowError("Personal Content is not configured; configure it before generation.")
     request = build_generation_context_request(task, state, brief, sources, config)
     if config.get("provider") == "real":
         response = run_real_generation_context_request(request, brief, config)
@@ -3861,8 +3897,7 @@ def validate_generation_context(context: Dict[str, object], task: Dict[str, str]
             raise WorkflowError("forbidden generation context content: " + forbidden)
 
 
-def run_generation_topic_generation(task_dir: Path, task: Dict[str, str]) -> None:
-    root = Path.cwd()
+def run_generation_topic_generation(root: Path, task_dir: Path, task: Dict[str, str]) -> None:
     context_path = task_dir / "content" / "generation-context.yaml"
     response_path = task_dir / "raw" / "personal-content" / "topic-generation-response.json"
     candidates_path = task_dir / "content" / "topic-candidates.json"

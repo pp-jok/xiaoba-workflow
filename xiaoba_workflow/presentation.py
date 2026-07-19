@@ -290,8 +290,9 @@ def render_topic_gate(task_dir: Path) -> str:
 
 def render_completion_summary(task_dir: Path, task: Dict[str, object], state: Dict[str, object]) -> str:
     task_type = str(task.get("task_type") or state.get("task_type") or "")
+    prefix = "演示结果。\n\n" if task.get("execution_mode") == "demo" else ""
     if task_type == "learning":
-        return "\n".join(
+        return prefix + "\n".join(
             [
                 "学习完成。",
                 "",
@@ -309,7 +310,7 @@ def render_completion_summary(task_dir: Path, task: Dict[str, object], state: Di
             ]
         )
     if task_type == "generation":
-        return "\n".join(
+        return prefix + "\n".join(
             [
                 "内容已完成审核。",
                 "",
@@ -324,7 +325,7 @@ def render_completion_summary(task_dir: Path, task: Dict[str, object], state: Di
             ]
         )
     if task_type == "post_publish_review":
-        return "\n".join(
+        return prefix + "\n".join(
             [
                 "复盘完成。",
                 "",

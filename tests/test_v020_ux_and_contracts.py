@@ -137,12 +137,14 @@ class V020UxAndContractsTests(unittest.TestCase):
             self.assertIn("下一步建议：", waiting.stdout)
 
     def test_start_command_lists_guided_entry_points(self):
-        result = run_cli("start")
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_cli("start", "--workspace", tmp)
 
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Xiaoba 已完成首次初始化。", result.stdout)
         self.assertIn("你想做什么？", result.stdout)
-        self.assertIn("学习一条小红书笔记", result.stdout)
-        self.assertIn("复盘一篇已发布内容", result.stdout)
+        self.assertIn("新建任务", result.stdout)
+        self.assertIn("继续未完成任务", result.stdout)
 
     def test_lingzao_runner_v020_capabilities_include_comments_and_transcript(self):
         result = subprocess.run(

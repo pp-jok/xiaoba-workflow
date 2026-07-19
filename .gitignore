@@ -6,6 +6,8 @@ __pycache__/
 .pytest_cache/
 *.py[cod]
 *.egg-info/
+build/
+dist/
 tasks/*
 !tasks/.gitkeep
 !tasks/README.md

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xiaoba-workflow"
-version = "0.2.1"
+version = "1.0.0"
 description = "Lightweight orchestration baseline for XHS content learning workflows."
 requires-python = ">=3.9"
 dependencies = []
@@ -20,6 +20,14 @@ xiaoba-workflow = "xiaoba_workflow.cli:main"
 [tool.setuptools.packages.find]
 include = ["xiaoba_workflow*"]
 exclude = ["prompts*", "templates*", "tests*", "tasks*"]
+
+[tool.setuptools.package-data]
+xiaoba_workflow = [
+    "assets/workflow.yaml",
+    "assets/prompts/*.md",
+    "assets/templates/*.yaml",
+    "assets/scripts/*.py",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

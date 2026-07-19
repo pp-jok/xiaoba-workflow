@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
+from . import config as local_config
 from . import locks
 
 
@@ -25,10 +26,12 @@ class PersonalContentError(Exception):
     pass
 
 
-def doctor() -> List[str]:
-    config = provider_config()
+def doctor(root: Path = None) -> List[str]:
+    config = provider_config(root)
     provider = str(config["provider"])
     messages = ["provider: " + provider]
+    if provider == "unavailable":
+        raise PersonalContentError("Personal Content is not configured")
     if provider == "mock":
         messages.append("workspace_ref: " + WORKSPACE_REF)
         messages.append("operations: mock mechanism_intake, mock generation_context")
@@ -69,10 +72,14 @@ def run_mock_mechanism_intake(
     state: Dict[str, object],
     analysis: Dict[str, object],
 ) -> None:
-    config = provider_config()
+    config = provider_config(root)
+    if config["provider"] == "unavailable" and task.get("execution_mode") == "demo":
+        config = {"provider": "mock", "command": None, "workspace": None}
     if config["provider"] == "real":
         run_real_mechanism_intake(root, task_dir, task, state, analysis, config)
         return
+    if config["provider"] == "unavailable":
+        raise PersonalContentError("Personal Content is not configured")
 
     prompt_path = root / "prompts" / "personal-content-governance.md"
     if not prompt_path.is_file():
@@ -99,11 +106,18 @@ def run_mock_mechanism_intake(
     ensure_has_successful_result(response["results"])
 
 
-def provider_config() -> Dict[str, object]:
-    provider = os.environ.get("XIAOBA_PERSONAL_CONTENT_PROVIDER", "mock")
-    if provider not in ("mock", "real"):
+def provider_config(root: Path = None) -> Dict[str, object]:
+    settings = local_config.provider_settings(root, "personal_content") if root is not None else {}
+    provider = os.environ.get("XIAOBA_PERSONAL_CONTENT_PROVIDER") or str(settings.get("mode") or "mock")
+    if provider == "demo":
+        provider = "mock"
+    if provider not in ("mock", "real", "unavailable"):
         raise PersonalContentError("unsupported Personal Content provider: " + provider)
     command = None
+    if settings.get("command"):
+        command = settings.get("command")
+    if command == "[]":
+        command = []
     if os.environ.get("XIAOBA_PERSONAL_CONTENT_COMMAND"):
         try:
             command = json.loads(os.environ["XIAOBA_PERSONAL_CONTENT_COMMAND"])
@@ -111,7 +125,7 @@ def provider_config() -> Dict[str, object]:
             raise PersonalContentError("XIAOBA_PERSONAL_CONTENT_COMMAND must be a JSON array: " + str(error))
     if command is not None and (not isinstance(command, list) or not all(isinstance(item, str) for item in command)):
         raise PersonalContentError("Personal Content command must be a list of strings")
-    workspace = os.environ.get("XIAOBA_PERSONAL_CONTENT_WORKSPACE")
+    workspace = os.environ.get("XIAOBA_PERSONAL_CONTENT_WORKSPACE") or settings.get("workspace")
     if provider == "real" and not workspace:
         raise PersonalContentError("XIAOBA_PERSONAL_CONTENT_WORKSPACE is required for real Personal Content provider")
     if provider == "real" and not command:
@@ -369,6 +383,12 @@ def run_mock_batch_mechanism_intake(
     state: Dict[str, object],
     cross: Dict[str, object],
 ) -> None:
+    config = provider_config(root)
+    if config["provider"] == "unavailable":
+        raise PersonalContentError("Personal Content is not configured")
+    if config["provider"] == "real":
+        raise PersonalContentError("real batch Personal Content intake is not implemented")
+
     prompt_path = root / "prompts" / "personal-content-governance.md"
     if not prompt_path.is_file():
         raise PersonalContentError("Missing prompt: prompts/personal-content-governance.md")

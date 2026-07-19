@@ -48,6 +48,8 @@ def provider_config(root: Path) -> Dict[str, object]:
     command = config.get("command")
     if local.get("command"):
         command = local.get("command")
+    if command == "[]":
+        command = []
     if os.environ.get("XIAOBA_LINGZAO_COMMAND"):
         try:
             command = json.loads(os.environ["XIAOBA_LINGZAO_COMMAND"])
@@ -58,7 +60,9 @@ def provider_config(root: Path) -> Dict[str, object]:
         timeout_seconds = float(timeout)
     except (TypeError, ValueError):
         raise LingzaoError("configuration_error", "Lingzao timeout must be numeric")
-    if provider not in ("mock", "real"):
+    if provider == "demo":
+        provider = "mock"
+    if provider not in ("mock", "real", "unavailable"):
         raise LingzaoError("configuration_error", "unsupported Lingzao provider: " + str(provider))
     if command is not None and (not isinstance(command, list) or not all(isinstance(item, str) for item in command)):
         raise LingzaoError("configuration_error", "Lingzao command must be a list of strings")
@@ -114,6 +118,8 @@ def doctor(root: Path) -> List[str]:
     if not prompt.is_file():
         raise LingzaoError("configuration_error", "missing prompt: prompts/lingzao-evidence-only.md")
     messages.append("prompt: ok")
+    if config["provider"] == "unavailable":
+        raise LingzaoError("configuration_error", "Lingzao real collection is not configured")
     if config["provider"] == "mock":
         return messages
     command = config.get("command")
@@ -184,9 +190,13 @@ def read_capabilities(command: List[str], config: Dict[str, object], root: Path)
 
 def collect_note(root: Path, task_dir: Path, task: Dict[str, str], state: Dict[str, object], source_url: str, sample_id: Optional[str] = None, raw_dir: Optional[Path] = None) -> None:
     config = provider_config(root)
+    if task.get("execution_mode") == "demo":
+        config["provider"] = "mock"
     target_dir = raw_dir or (task_dir / "raw" / "lingzao")
     if config["provider"] == "mock":
         write_mock_note(target_dir, task, state, source_url, sample_id)
+    elif config["provider"] == "unavailable":
+        raise LingzaoError("configuration_error", "Lingzao real collection is not configured")
     else:
         run_real(root, task_dir, target_dir, task, "collect_note", source_url, config, sample_id)
 
@@ -211,6 +221,7 @@ def write_mock_note(target_dir: Path, task: Dict[str, str], state: Dict[str, obj
         raise LingzaoError("incomplete_output", "Lingzao raw output is incomplete")
     captured_at = now_iso()
     note_detail = {
+        "demo": task.get("execution_mode") == "demo",
         "sample_id": sample_id,
         "source": {"source_type": "xhs_note", "original_url": source_url, "canonical_url": source_url},
         "author": {"name": "Mock Author", "id": "mock-author-001"},
@@ -246,6 +257,7 @@ def write_mock_note(target_dir: Path, task: Dict[str, str], state: Dict[str, obj
     )
     invocation["adapter"] = "mock_lingzao"
     invocation["mode"] = "mock"
+    invocation["demo"] = task.get("execution_mode") == "demo"
     invocation["task_type"] = task["task_type"]
     invocation["stage"] = state.get("current_stage")
     invocation["source_url"] = source_url
@@ -253,6 +265,15 @@ def write_mock_note(target_dir: Path, task: Dict[str, str], state: Dict[str, obj
     invocation["outputs"] = invocation["raw_files"]
     write_json_atomic(note_path, note_detail)
     write_json_atomic(invocation_path, invocation)
+    if task.get("execution_mode") == "demo":
+        write_json_atomic(
+            target_dir / "demo-mode.json",
+            {
+                "demo": True,
+                "message": "This is deterministic demo data, not proof that the source URL was collected.",
+                "created_at": captured_at,
+            },
+        )
 
 
 def relative_raw_file(target_dir: Path, name: str) -> str:

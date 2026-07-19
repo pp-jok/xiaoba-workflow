@@ -1,0 +1,21 @@
+summary_id: summary-001
+updated_at: ""
+
+included_samples: []
+
+mechanism_updates:
+  - mechanism_ref: ""
+    supporting_samples: []
+    counter_samples: []
+    observed_scope: []
+    unsupported_scope: []
+    confidence_before: low
+    confidence_after: medium
+    recommendation: continue_observing
+
+new_mechanisms: []
+governance_candidates: []
+content_opportunities: []
+open_questions: []
+
+recommend_governance: false

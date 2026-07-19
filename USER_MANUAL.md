@@ -1,271 +1,164 @@
-# 使用手册
+# Xiaoba Workflow 使用手册
 
-这份手册面向本地使用者和接手的 Codex。目标是先跑通 Mock，再按需接入真实 Lingzao 和 Personal Content。
+## 1. 第一次使用
 
-## 1. 不要直接提交的内容
-
-以下内容只属于本机：
-
-- `lingzao/`
-- `hot-learning/`
-- `personal-content/`
-- `.xhs-personal-content-skill/`
-- `.env`
-- `tasks/task-*`
-
-这些内容默认被 `.gitignore` 忽略。外部 Skill 由每个用户自己安装。
-
-## 2. 初始化检查
+安装后直接运行：
 
 ```bash
-python3 -m xiaoba_workflow validate-project
-python3 -m xiaoba_workflow setup
-python3 -m xiaoba_workflow doctor --skill lingzao
-python3 -m xiaoba_workflow doctor --skill personal-content
-python3 -m xiaoba_workflow doctor --all
+xiaoba-workflow
 ```
 
-默认情况下两个 doctor 都应显示 mock provider。
+Xiaoba 会自动创建本地工作区、写入安全默认配置，并显示当前能力。
 
-`setup` 会创建本地 `xiaoba.local.yaml`，只写入保守配置，不写 API Key。已有配置不会被静默覆盖。
-
-## 2.1 用户态启动
-
-推荐从交互入口开始：
-
-```bash
-python3 -m xiaoba_workflow start
-```
-
-它只会询问你想做什么：
+默认工作区：
 
 ```text
-1. 学习一条小红书笔记
-2. 学习一批对标内容
-3. 生成一篇小红书帖子
-4. 复盘一篇已发布内容
+~/.xiaoba-workflow/
 ```
 
-选择后，Xiaoba 会创建任务并自动运行到下一次需要你确认的位置。它不会绕过费用确认、样本选择、选题选择、正文审核或规则确认。
-
-默认状态输出只展示用户能理解的进度。排查问题时再使用技术模式：
+如需指定工作区：
 
 ```bash
-python3 -m xiaoba_workflow task-status tasks/<task-id> --technical
-python3 -m xiaoba_workflow run tasks/<task-id> --technical
-python3 -m xiaoba_workflow run-until-gate tasks/<task-id> --technical
+XIAOBA_WORKSPACE="/absolute/path/to/workspace" xiaoba-workflow
 ```
 
-## 3. 跑一个 Mock learning
+## 2. 学习一条小红书笔记
+
+在首页选择：
+
+```text
+新建任务 → 学习一条小红书笔记
+```
+
+如果 Lingzao 已配置，Xiaoba 会按流程获取公开内容并继续分析。
+
+如果 Lingzao 未配置，Xiaoba 会询问：
+
+1. 手工粘贴笔记正文；
+2. 手工粘贴视频口播稿；
+3. 运行演示流程；
+4. 取消。
+
+演示流程会明确标记为演示结果，不代表真实读取了链接。
+
+## 3. 学习一批对标内容
+
+在首页选择：
+
+```text
+新建任务 → 学习一批对标内容
+```
+
+批量学习会先准备候选样本，并在需要你选择样本时暂停。选择后继续执行。
+
+## 4. 生成一篇小红书帖子
+
+在首页选择：
+
+```text
+新建任务 → 生成一篇小红书帖子
+```
+
+Xiaoba 会读取可用的个人内容规则，生成选题候选。你需要选择一个选题，然后进入正文生成和审核。
+
+审核时可以：
+
+1. 通过；
+2. 修改；
+3. 暂不处理。
+
+选择修改时，Xiaoba 会单独询问修改意见，并生成新版本。
+
+## 5. 复盘一篇已发布内容
+
+在首页选择：
+
+```text
+新建任务 → 复盘一篇已发布内容
+```
+
+Xiaoba 只生成复盘建议，不会自动修改 Personal Content 规则，也不会发布内容。
+
+## 6. 继续未完成任务
+
+运行：
 
 ```bash
-python3 -m xiaoba_workflow create-task --type learning --source-url "https://example.com/note/1"
-python3 -m xiaoba_workflow run tasks/<task-id>
-python3 -m xiaoba_workflow run tasks/<task-id>
-python3 -m xiaoba_workflow run tasks/<task-id>
-python3 -m xiaoba_workflow run tasks/<task-id>
-python3 -m xiaoba_workflow run tasks/<task-id>
-python3 -m xiaoba_workflow run tasks/<task-id>
-python3 -m xiaoba_workflow run tasks/<task-id>
+xiaoba-workflow
 ```
 
-每次 `run` 只执行一个阶段。完成后 `state.yaml` 应显示 `status: completed`。
+选择：
 
-也可以使用：
+```text
+继续未完成任务
+```
+
+Xiaoba 会展示最近未完成任务，并从原来的人工确认或暂停位置继续。
+
+## 7. 查看最近结果
+
+运行：
 
 ```bash
-python3 -m xiaoba_workflow run-until-gate tasks/<task-id>
+xiaoba-workflow
 ```
 
-该命令会连续执行普通阶段，遇到人工选择、blocked、completed 或外部额度确认时停止，不会绕过 gate。
+选择：
 
-## 4. 接入真实 Lingzao
+```text
+查看最近结果
+```
 
-本仓库不提供 Lingzao。安装后配置：
+你可以直接查看完成摘要，不需要打开 YAML 文件。
+
+## 8. 配置真实能力
+
+运行：
 
 ```bash
-export XIAOBA_LINGZAO_PROVIDER=real
-export XIAOBA_LINGZAO_COMMAND='["python3", "scripts/lingzao_runner.py"]'
-export LINGZAO_CLIENT_PATH="/absolute/path/to/lingzao/scripts/lingzao_client.py"
-export LINGZAO_API_KEY="..."
-export LINGZAO_BASE_URL="..."
-python3 -m xiaoba_workflow doctor --skill lingzao
+xiaoba-workflow configure
 ```
 
-doctor 不做采集，只检查 contract、命令和配置。通过后再创建真实测试任务。
+配置项包括：
 
-真实采集 note detail 后，如果需要评论或视频逐字稿，任务会停在 `external_cost_confirmation`：
+1. Lingzao；
+2. Personal Content；
+3. 内容分析方式；
+4. 内容生成方式；
+5. 恢复安全默认设置。
+
+Xiaoba 不会把 API Key、Token、Cookie 写入配置文件。请使用环境变量或本地 `.env`。
+
+## 9. 任务暂停怎么办
+
+blocked 时，Xiaoba 会给出有限恢复选项：
+
+1. 重试；
+2. 跳过可选步骤继续；
+3. 手工补充内容；
+4. 查看技术详情；
+5. 暂停任务。
+
+不要手工修改 `state.yaml`。
+
+## 10. 查看技术信息
+
+普通使用不需要这些命令。排障时可用：
 
 ```bash
-python3 -m xiaoba_workflow run tasks/<task-id>
-python3 -m xiaoba_workflow task-status tasks/<task-id>
+xiaoba-workflow status --technical
+xiaoba-workflow doctor --all
+xiaoba-workflow task-status <task-dir> --technical
 ```
 
-确认额外调用：
+开发者请阅读 [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md)。
 
-```bash
-python3 -m xiaoba_workflow confirm-external-cost tasks/<task-id> --decision confirm
-python3 -m xiaoba_workflow run tasks/<task-id>
-```
+## 11. 重要边界
 
-跳过额外调用：
-
-```bash
-python3 -m xiaoba_workflow confirm-external-cost tasks/<task-id> --decision skip
-python3 -m xiaoba_workflow run tasks/<task-id>
-```
-
-跳过不会伪造评论或逐字稿，Evidence 会把缺失项写入 coverage、missing 和 warnings。
-
-可选的本地策略：
-
-```yaml
-learning:
-  collect_comments: never
-  collect_transcript: ask
-  allow_auto_paid_calls: false
-  transcript_required: false
-```
-
-默认不采集评论、逐字稿询问确认、不允许自动付费调用。`always` 默认仍会要求确认；只有 `allow_auto_paid_calls: true` 时才会自动调用。`never` 会记录 skipped。`transcript_required: true` 用于明确要求视频逐字稿，失败时任务会 blocked。
-
-## 5. Hot Learning Runner 和手工导入
-
-本项目提供 Hot Learning runner contract：
-
-```bash
-python3 scripts/hot_learning_runner.py --capabilities
-python3 scripts/hot_learning_runner.py --doctor
-```
-
-默认 `mock` 可生成确定性 Markdown。`codex_manual` 会生成手工执行说明，`external` 需要用户配置自己的外部命令。不要把 fake runner 验证说成真实 Hot Learning 在线验证。
-
-如果你用 Codex 或人工按 Prompt 生成了分析 Markdown，可以导入：
-
-```bash
-python3 -m xiaoba_workflow import-hot-learning-analysis tasks/<task-id> --markdown /absolute/path/analysis.md
-python3 -m xiaoba_workflow run tasks/<task-id>
-```
-
-导入只写 `raw/hot-learning/`，标准化由下一次 `run` 完成。
-
-## 5.1 外部内容生成 Provider
-
-默认 generation 使用本地 mock。接入外部 generation runner 时：
-
-```bash
-export XIAOBA_GENERATION_PROVIDER=external
-export XIAOBA_GENERATION_COMMAND='["python3", "/absolute/path/to/generation_runner.py"]'
-```
-
-正文生成使用 `generate_content` operation。第一次生成会写入 `revision-001`；在 `review` 阶段选择 `request_changes` 后，下一次 `run` 会带上上一版内容和 feedback 引用，生成 `revision-002`。`approve` 仍只完成本地任务，不发布内容。
-
-## 6. 接入真实 Personal Content
-
-本仓库不提供 Personal Content。安装后配置：
-
-```bash
-export XIAOBA_PERSONAL_CONTENT_PROVIDER=real
-export XIAOBA_PERSONAL_CONTENT_COMMAND='["python3", "-m", "app.cli.main"]'
-export XIAOBA_PERSONAL_CONTENT_WORKSPACE="/absolute/path/to/personal-content-workspace"
-export PYTHONPATH="/absolute/path/to/personal-content-skill"
-python3 -m xiaoba_workflow doctor --skill personal-content
-```
-
-doctor 会检查这些命令是否可用：
-
-- `import-mechanism`
-- `show-generation-context`
-- `propose-rule-from-mechanism`
-- `create-rule-decision`
-- `resolve-decision`
-
-## 7. 从学习到规则沉淀
-
-learning 完成后：
-
-```bash
-python3 -m xiaoba_workflow prepare-governance tasks/<learning-task-id> --profile-id creator-main
-python3 -m xiaoba_workflow propose-governance-rule tasks/<learning-task-id> --proposal-id rule-proposal-001
-python3 -m xiaoba_workflow confirm-governance-rule tasks/<learning-task-id> --proposal-id rule-proposal-001 --decision confirm
-```
-
-这会把候选规则交给 Personal Content 的用户决策流。确认后规则可以被后续 GenerationContext 使用。
-
-## 8. 从规则到待审核内容包
-
-```bash
-python3 -m xiaoba_workflow create-task --type generation --brief "基于已沉淀规则生成 5 个小红书选题"
-python3 -m xiaoba_workflow run tasks/<generation-task-id>
-python3 -m xiaoba_workflow run tasks/<generation-task-id>
-python3 -m xiaoba_workflow run tasks/<generation-task-id>
-python3 -m xiaoba_workflow select-topic tasks/<generation-task-id> --id topic-001
-python3 -m xiaoba_workflow run tasks/<generation-task-id>
-```
-
-任务会停在 `review`，产物是 `content/content-package.yaml`。它是待审核草稿，不是发布稿。
-
-## 9. 审核和修订
-
-要求修改：
-
-```bash
-python3 -m xiaoba_workflow review-content tasks/<generation-task-id> --decision request_changes --feedback "请补充安装步骤"
-python3 -m xiaoba_workflow run tasks/<generation-task-id>
-```
-
-确认完成：
-
-```bash
-python3 -m xiaoba_workflow review-content tasks/<generation-task-id> --decision approve
-```
-
-`approve` 只完成本地任务，不发布。
-
-`request_changes` 会生成候选长期偏好：
-
-```bash
-python3 -m xiaoba_workflow confirm-feedback-rule tasks/<generation-task-id> \
-  --candidate-id feedback-rule-001 \
-  --decision confirm
-```
-
-该命令只记录用户确认结果，不自动激活规则。后续如需进入 Personal Content 长期规则，仍应走明确治理流程。
-
-## 10. 发布后复盘
-
-Xiaoba 不自动发布。用户手工发布后，可创建复盘任务：
-
-```bash
-python3 -m xiaoba_workflow create-task --type post_publish_review --source-url "https://example.com/published-note"
-python3 -m xiaoba_workflow run-until-gate tasks/<task-id>
-```
-
-当前复盘只生成建议，不自动修改 Personal Content 规则状态。
-
-## 11. 本地配置
-
-复制示例配置：
-
-```bash
-cp xiaoba.local.example.yaml xiaoba.local.yaml
-```
-
-`xiaoba.local.yaml` 已被 `.gitignore` 忽略。不要把 API Key 写入该文件；secret 使用环境变量。
-
-## 12. 清理本地测试数据
-
-保留目录说明，删除运行任务：
-
-```bash
-find tasks -mindepth 1 -maxdepth 1 -type d -name 'task-*' -exec rm -rf {} +
-```
-
-发布前检查：
-
-```bash
-git ls-files lingzao hot-learning personal-content .xhs-personal-content-skill
-git ls-files tasks
-```
-
-预期外部 Skill 目录无输出，`tasks` 只显示 `.gitkeep` 和 `README.md`。
+- Lingzao 真实采集需要用户自行安装和配置。
+- Lingzao 不下载视频文件，逐字稿不保证自动成功。
+- Hot Learning 不声明官方在线 API。
+- Personal Content 必须有独立真实 workspace。
+- 不自动发布小红书。
+- 不自动激活长期规则。
+- 演示结果不能视为真实学习结果。

@@ -41,6 +41,10 @@
 | UX Lite `start` | 四入口交互、创建任务并运行到下一人工 gate 或完成 | `local_workflow` | `verified` | 只优化本地交互，不新增 Skill、Provider 或发布能力 |
 | UX Lite `setup` | 生成保守本地配置，不写入 secret | `local_workflow` | `verified` | 已有 `xiaoba.local.yaml` 不会被静默覆盖 |
 | 用户态进度与摘要 | 默认隐藏内部 stage、runner、contract 和 artifact 路径；technical 模式保留细节 | `local_workflow` | `verified` | 不改变底层 workflow 和文件产物 |
+| v1 用户工作区 | `~/.xiaoba-workflow/` 或 `XIAOBA_WORKSPACE`，包含 config/tasks/logs/runtime | `local_workflow` | `verified` | 不自动迁移旧目录，不写入 Skill 安装目录 |
+| v1 首次启动 | `xiaoba-workflow` 自动 bootstrap、显示能力、进入任务首页 | `local_workflow` | `verified` | 技术命令继续保留给开发和排障 |
+| 手工输入降级 | 用户手工提供标题、正文或口播稿后进入现有 Evidence Normalizer | `local_workflow` | `verified` | 不浏览器抓取，不绕过平台限制 |
+| demo 模式 | 用户明确选择后运行确定性演示，并写 `execution_mode: demo` / `demo: true` | `demo` | `verified` | 不能视为真实采集，不能用于真实发布结论 |
 | publishing | 未实现 | `not_implemented` | `not_verified` | 明确不支持自动发布 |
 
 ## 当前不应宣称

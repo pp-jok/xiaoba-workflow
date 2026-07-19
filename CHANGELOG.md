@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.0.0 - 2026-07-19
+
+- Added productized Xiaoba workspace bootstrap under `~/.xiaoba-workflow/`, with `XIAOBA_WORKSPACE` and `start --workspace` overrides.
+- Changed the default CLI behavior so `xiaoba-workflow` without a subcommand enters `start`.
+- Added safe first-run defaults: Lingzao and Personal Content start as `unavailable`; Hot Learning and generation start as `codex_manual`.
+- Added packaged runtime assets so installed wheels can start from arbitrary directories without requiring users to enter the source checkout or Skill install directory.
+- Added user-facing home screen for new tasks, continuing unfinished tasks, viewing recent results, configuration, and system status.
+- Added explicit demo/manual mode separation for learning tasks when Lingzao is not configured.
+- Added manual content input as a formal fallback for single-note learning.
+- Added user-facing blocked recovery prompts and audit entries for retry/skip/manual recovery choices.
+- Added `configure`, `status`, `list-tasks`, and `show-result` CLI commands while keeping technical commands for development and CI.
+- Added Codex Skill usage guidance and v1 release documentation.
+- Tightened final release boundaries so `codex_manual` does not silently produce Hot Learning mock analysis for non-demo user tasks.
+- Generation now blocks clearly when Personal Content is not configured instead of producing fake topics or content.
+- Unified ordinary CLI workspace behavior for installed usage while preserving source-checkout technical compatibility.
+
 ## 0.2.1 - 2026-07-18
 
 - Added UX Lite interactive `start` flow that shows only four user-facing task entries and automatically runs to the next human gate, blocked state, or completion.

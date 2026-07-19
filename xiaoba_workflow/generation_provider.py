@@ -22,9 +22,13 @@ def now_iso() -> str:
 def provider_config(root: Path) -> Dict[str, object]:
     settings = local_config.provider_settings(root, "generation")
     provider = os.environ.get("XIAOBA_GENERATION_PROVIDER") or settings.get("mode") or "mock"
-    if provider not in ("mock", "codex", "external"):
+    if provider == "codex_manual":
+        provider = "codex"
+    if provider not in ("mock", "codex", "external", "unavailable", "demo"):
         raise GenerationProviderError("unsupported generation provider: " + str(provider))
     command = settings.get("command")
+    if command == "[]":
+        command = []
     if os.environ.get("XIAOBA_GENERATION_COMMAND"):
         try:
             command = json.loads(os.environ["XIAOBA_GENERATION_COMMAND"])
@@ -44,7 +48,10 @@ def doctor(root: Path) -> List[str]:
     config = provider_config(root)
     provider = str(config["provider"])
     messages = ["provider: " + provider, "contract_version: " + CONTRACT_VERSION]
-    if provider == "mock":
+    if provider == "unavailable":
+        messages.append("ready: false")
+        return messages
+    if provider in ("mock", "demo"):
         messages.append("operations: generate_topics, generate_content")
         messages.append("ready: true")
         return messages

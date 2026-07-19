@@ -177,7 +177,7 @@ class CliTests(unittest.TestCase):
             self.assertIn("current_stage: task_intake", result.stdout)
 
     def test_task_status_reports_missing_task_directory(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with temp_project() as tmp:
             result = run_cli("task-status", "tasks/missing-task", cwd=tmp)
 
             self.assertEqual(result.returncode, 1)

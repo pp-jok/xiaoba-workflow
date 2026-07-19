@@ -1,0 +1,105 @@
+task_types:
+  - learning
+  - learning_batch
+  - generation
+  - post_publish_review
+
+required_templates:
+  - templates/task.yaml
+  - templates/state.yaml
+  - templates/evidence.yaml
+  - templates/analysis.yaml
+  - templates/learning-summary.yaml
+
+required_prompts:
+  - prompts/lingzao-evidence-only.md
+  - prompts/hot-learning-analysis-only.md
+  - prompts/hot-learning-cross-sample.md
+  - prompts/personal-content-governance.md
+  - prompts/personal-content-generation.md
+
+required_directories:
+  - templates
+  - prompts
+  - tasks
+  - tests
+
+skills:
+  lingzao:
+    provider: mock
+
+workflows:
+  learning:
+    initial_stage: task_intake
+    stages:
+      task_intake:
+        next: evidence_collection
+      evidence_collection:
+        next: evidence_normalization
+      evidence_normalization:
+        next: analysis
+      analysis:
+        next: analysis_normalization
+      analysis_normalization:
+        next: mechanism_intake
+      mechanism_intake:
+        next: aggregation
+      aggregation:
+        next: completed
+      completed:
+        terminal: true
+
+  learning_batch:
+    initial_stage: task_intake
+    stages:
+      task_intake:
+        next: benchmark_screening
+      benchmark_screening:
+        next: sample_selection
+      sample_selection:
+        human_gate: true
+        next: evidence_collection
+      evidence_collection:
+        next: evidence_normalization
+      evidence_normalization:
+        next: analysis
+      analysis:
+        next: analysis_normalization
+      analysis_normalization:
+        next: cross_sample_aggregation
+      cross_sample_aggregation:
+        next: mechanism_intake
+      mechanism_intake:
+        next: completed
+      completed:
+        terminal: true
+
+  generation:
+    initial_stage: task_intake
+    stages:
+      task_intake:
+        next: context_assembly
+      context_assembly:
+        next: topic_generation
+      topic_generation:
+        next: topic_selection
+      topic_selection:
+        human_gate: true
+        next: content_generation
+      content_generation:
+        next: review
+      review:
+        human_gate: true
+        next: completed
+      completed:
+        terminal: true
+
+  post_publish_review:
+    initial_stage: task_intake
+    stages:
+      task_intake:
+        next: review_analysis
+      review_analysis:
+        next: completed
+      completed:
+        terminal: true

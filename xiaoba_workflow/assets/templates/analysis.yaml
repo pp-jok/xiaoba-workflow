@@ -1,0 +1,41 @@
+sample_id: sample-001
+
+normalization:
+  status: normalized
+  warnings: []
+
+mechanisms:
+  - id: mechanism-001
+    name: ""
+    description: ""
+    problem: ""
+    solution: ""
+
+    observed_facts:
+      - text: ""
+        source_ref: ""
+        source_fragment: ""
+
+    inferences:
+      - text: ""
+        source_fragment: ""
+
+    pattern: []
+    applicable_scope: []
+    missing_information: []
+    limitations: []
+    alternative_explanations: []
+
+    confidence: medium
+    source_refs: []
+
+transfer:
+  learnable: []
+  not_copyable: []
+  account_fit: []
+  originality_requirements: []
+
+rule_suggestions: []
+asset_suggestions: []
+content_opportunities: []
+questions: []

@@ -27,14 +27,15 @@ def run_cli(*args, cwd=None, input_text=None):
 
 class UxLiteTests(unittest.TestCase):
     def test_start_first_screen_shows_only_four_user_entries_without_technical_terms(self):
-        result = run_cli("start")
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_cli("start", "--workspace", tmp)
 
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Xiaoba 已完成首次初始化。", result.stdout)
         self.assertIn("你想做什么？", result.stdout)
-        self.assertIn("1. 学习一条小红书笔记", result.stdout)
-        self.assertIn("2. 学习一批对标内容", result.stdout)
-        self.assertIn("3. 生成一篇小红书帖子", result.stdout)
-        self.assertIn("4. 复盘一篇已发布内容", result.stdout)
+        self.assertIn("1. 新建任务", result.stdout)
+        self.assertIn("2. 继续未完成任务", result.stdout)
+        self.assertIn("3. 查看最近结果", result.stdout)
         first_screen = result.stdout.split("请选择", 1)[0]
         self.assertNotIn("task type", first_screen)
         self.assertNotIn("provider", first_screen)
@@ -43,66 +44,73 @@ class UxLiteTests(unittest.TestCase):
 
     def test_start_learning_creates_task_runs_to_completed_and_prints_summary(self):
         with temp_project() as root:
-            result = run_cli("start", cwd=root, input_text="1\nhttps://example.com/note/1\n")
+            result = run_cli("start", "--workspace", str(root), cwd=root, input_text="1\n1\nhttps://example.com/note/1\n3\n")
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("学习完成。", result.stdout)
+            self.assertIn("演示结果。", result.stdout)
             self.assertIn("本次得到：", result.stdout)
             self.assertIn("使用能力：", result.stdout)
             self.assertIn("Lingzao：获取公开内容", result.stdout)
             self.assertNotIn("current_stage", result.stdout)
             self.assertEqual(len(list((root / "tasks").glob("task-*"))), 1)
 
-    def test_start_generation_runs_to_topic_selection_and_hides_topic_ids(self):
+    def test_start_generation_without_personal_content_blocks_before_topics(self):
         with temp_project() as root:
-            result = run_cli("start", cwd=root, input_text="3\n生成一篇小红书帖子\n")
+            result = run_cli("start", "--workspace", str(root), cwd=root, input_text="1\n3\n生成一篇小红书帖子\n")
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("已生成", result.stdout)
-            self.assertIn("请选择 1 到", result.stdout)
+            self.assertIn("Personal Content is not configured", result.stdout)
+            self.assertIn("任务暂停在：准备个人规则", result.stdout)
             self.assertNotIn("topic-001", result.stdout)
+            self.assertNotIn("已生成", result.stdout)
             self.assertNotIn("current_stage", result.stdout)
             task = next((root / "tasks").glob("task-*"))
             state = (task / "state.yaml").read_text(encoding="utf-8")
-            self.assertIn("current_stage: topic_selection", state)
+            self.assertIn("status: blocked", state)
+            self.assertIn("current_stage: context_assembly", state)
+            self.assertFalse((task / "content/topic-candidates.json").exists())
 
-    def test_start_generation_can_select_topic_approve_and_print_summary(self):
+    def test_start_generation_without_personal_content_cannot_approve_fake_content(self):
         with temp_project() as root:
-            result = run_cli("start", cwd=root, input_text="3\n生成一篇小红书帖子\n1\n1\n")
+            result = run_cli("start", "--workspace", str(root), cwd=root, input_text="1\n3\n生成一篇小红书帖子\n1\n1\n")
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("已选择选题。", result.stdout)
-            self.assertIn("正文已经生成。", result.stdout)
-            self.assertIn("内容已完成审核。", result.stdout)
+            self.assertIn("Personal Content is not configured", result.stdout)
+            self.assertNotIn("已选择选题。", result.stdout)
+            self.assertNotIn("正文已经生成。", result.stdout)
+            self.assertNotIn("内容已完成审核。", result.stdout)
             self.assertNotIn("topic-001", result.stdout)
             task = next((root / "tasks").glob("task-*"))
             state = (task / "state.yaml").read_text(encoding="utf-8")
-            self.assertIn("status: completed", state)
-            self.assertTrue((task / "content/review-decision.json").is_file())
+            self.assertIn("status: blocked", state)
+            self.assertFalse((task / "content/review-decision.json").exists())
 
-    def test_start_generation_request_changes_asks_feedback_separately_and_then_completes(self):
+    def test_start_generation_without_personal_content_cannot_enter_revision_flow(self):
         with temp_project() as root:
             result = run_cli(
                 "start",
+                "--workspace",
+                str(root),
                 cwd=root,
-                input_text="3\n生成一篇小红书帖子\n1\n2\n请加强安装步骤\n1\n",
+                input_text="1\n3\n生成一篇小红书帖子\n1\n2\n请加强安装步骤\n1\n",
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("请告诉我需要修改什么。", result.stdout)
-            self.assertIn("内容已完成审核。", result.stdout)
+            self.assertIn("Personal Content is not configured", result.stdout)
+            self.assertNotIn("请告诉我需要修改什么。", result.stdout)
+            self.assertNotIn("内容已完成审核。", result.stdout)
             task = next((root / "tasks").glob("task-*"))
-            self.assertTrue((task / "content/revisions/revision-001/content-package.yaml").is_file())
-            self.assertTrue((task / "content/revisions/revision-002/content-package.yaml").is_file())
+            self.assertFalse((task / "content/revisions/revision-001/content-package.yaml").exists())
+            self.assertFalse((task / "content/revisions/revision-002/content-package.yaml").exists())
             state = (task / "state.yaml").read_text(encoding="utf-8")
-            self.assertIn("status: completed", state)
+            self.assertIn("status: blocked", state)
 
     def test_start_invalid_choice_reprompts_one_question_at_a_time(self):
         with temp_project() as root:
-            result = run_cli("start", cwd=root, input_text="9\n4\nhttps://example.com/published/1\n")
+            result = run_cli("start", "--workspace", str(root), cwd=root, input_text="9\n1\n4\nhttps://example.com/published/1\n")
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("请输入 1、2、3 或 4。", result.stdout)
+            self.assertIn("请输入 1 到 6。", result.stdout)
             self.assertIn("复盘完成。", result.stdout)
 
     def test_task_status_default_hides_internal_stage_and_technical_shows_it(self):
@@ -134,19 +142,19 @@ class UxLiteTests(unittest.TestCase):
 
     def test_setup_creates_conservative_local_config_without_secret_and_refuses_overwrite(self):
         with temp_project() as root:
-            first = run_cli("setup", cwd=root, input_text="1\n1\n1\n1\n")
-            second = run_cli("setup", cwd=root, input_text="")
+            first = run_cli("setup", "--workspace", str(root), cwd=root, input_text="6\n")
+            second = run_cli("setup", "--workspace", str(root), cwd=root, input_text="6\n")
 
             self.assertEqual(first.returncode, 0, first.stderr)
-            config_path = root / "xiaoba.local.yaml"
+            config_path = root / "config/xiaoba.local.yaml"
             self.assertTrue(config_path.is_file())
             config_text = config_path.read_text(encoding="utf-8")
             self.assertIn("collect_comments: never", config_text)
             self.assertIn("collect_transcript: ask", config_text)
             self.assertIn("allow_auto_paid_calls: false", config_text)
+            self.assertIn("mode: unavailable", config_text)
             self.assertNotIn("API_KEY", config_text)
-            self.assertEqual(second.returncode, 1)
-            self.assertIn("已存在", second.stderr)
+            self.assertEqual(second.returncode, 0, second.stderr)
 
 
 def temp_project():

@@ -6,6 +6,31 @@ from typing import Iterable
 from . import interactive
 from . import runtime
 from . import presentation
+from . import workspace as workspace_module
+
+
+WORKSPACE_COMMANDS = {
+    "doctor",
+    "create-task",
+    "task-status",
+    "advance",
+    "resume",
+    "block",
+    "unblock",
+    "run",
+    "run-until-gate",
+    "import-hot-learning-analysis",
+    "select-samples",
+    "set-generation-brief",
+    "attach-learning",
+    "select-topic",
+    "review-content",
+    "prepare-governance",
+    "propose-governance-rule",
+    "confirm-governance-rule",
+    "confirm-feedback-rule",
+    "confirm-external-cost",
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -24,6 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doctor_parser.add_argument("--skill", default="lingzao")
     doctor_parser.add_argument("--all", action="store_true", dest="all_skills")
+    doctor_parser.add_argument("--workspace")
 
     create_parser = subparsers.add_parser(
         "create-task",
@@ -32,6 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
     create_parser.add_argument("--type", required=True, choices=runtime.TASK_TYPES, dest="task_type")
     create_parser.add_argument("--source-url")
     create_parser.add_argument("--brief")
+    create_parser.add_argument("--workspace")
 
     status_parser = subparsers.add_parser(
         "task-status",
@@ -39,18 +66,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     status_parser.add_argument("task_dir")
     status_parser.add_argument("--technical", action="store_true")
+    status_parser.add_argument("--workspace")
 
     advance_parser = subparsers.add_parser(
         "advance",
         help="Advance a task by one configured workflow stage without running stage business logic.",
     )
     advance_parser.add_argument("task_dir")
+    advance_parser.add_argument("--workspace")
 
     resume_parser = subparsers.add_parser(
         "resume",
         help="Resume a task waiting at a configured human gate and move to its next stage.",
     )
     resume_parser.add_argument("task_dir")
+    resume_parser.add_argument("--workspace")
 
     block_parser = subparsers.add_parser(
         "block",
@@ -58,12 +88,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     block_parser.add_argument("task_dir")
     block_parser.add_argument("--reason", required=True)
+    block_parser.add_argument("--workspace")
 
     unblock_parser = subparsers.add_parser(
         "unblock",
         help="Clear blocked status without advancing the task.",
     )
     unblock_parser.add_argument("task_dir")
+    unblock_parser.add_argument("--workspace")
 
     run_parser = subparsers.add_parser(
         "run",
@@ -71,6 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument("task_dir")
     run_parser.add_argument("--technical", action="store_true")
+    run_parser.add_argument("--workspace")
 
     run_until_gate_parser = subparsers.add_parser(
         "run-until-gate",
@@ -79,16 +112,46 @@ def build_parser() -> argparse.ArgumentParser:
     run_until_gate_parser.add_argument("task_dir")
     run_until_gate_parser.add_argument("--max-steps", type=int, default=20)
     run_until_gate_parser.add_argument("--technical", action="store_true")
+    run_until_gate_parser.add_argument("--workspace")
 
-    subparsers.add_parser(
+    start_parser = subparsers.add_parser(
         "start",
         help="Show guided entry points for common user tasks.",
     )
+    start_parser.add_argument("--workspace")
+    start_parser.add_argument("--technical", action="store_true")
 
-    subparsers.add_parser(
+    configure_parser = subparsers.add_parser(
+        "configure",
+        help="Configure real local capabilities without writing secrets.",
+    )
+    configure_parser.add_argument("--workspace")
+
+    setup_parser = subparsers.add_parser(
         "setup",
         help="Create a conservative local xiaoba.local.yaml configuration guide.",
     )
+    setup_parser.add_argument("--workspace")
+
+    status_parser_v1 = subparsers.add_parser(
+        "status",
+        help="Show user-facing Xiaoba capability status.",
+    )
+    status_parser_v1.add_argument("--workspace")
+    status_parser_v1.add_argument("--technical", action="store_true")
+
+    list_parser = subparsers.add_parser(
+        "list-tasks",
+        help="List recent tasks in the Xiaoba workspace.",
+    )
+    list_parser.add_argument("--workspace")
+
+    result_parser = subparsers.add_parser(
+        "show-result",
+        help="Show a user-facing completed task summary.",
+    )
+    result_parser.add_argument("task_dir")
+    result_parser.add_argument("--workspace")
 
     import_hot_learning_parser = subparsers.add_parser(
         "import-hot-learning-analysis",
@@ -96,6 +159,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     import_hot_learning_parser.add_argument("task_dir")
     import_hot_learning_parser.add_argument("--markdown", required=True)
+    import_hot_learning_parser.add_argument("--workspace")
 
     select_parser = subparsers.add_parser(
         "select-samples",
@@ -103,6 +167,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     select_parser.add_argument("task_dir")
     select_parser.add_argument("--ids", nargs="*", required=True)
+    select_parser.add_argument("--workspace")
 
     brief_parser = subparsers.add_parser(
         "set-generation-brief",
@@ -110,6 +175,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     brief_parser.add_argument("task_dir")
     brief_parser.add_argument("--brief", required=True)
+    brief_parser.add_argument("--workspace")
 
     attach_parser = subparsers.add_parser(
         "attach-learning",
@@ -117,6 +183,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     attach_parser.add_argument("task_dir")
     attach_parser.add_argument("--task", required=True, dest="source_task_dir")
+    attach_parser.add_argument("--workspace")
 
     topic_parser = subparsers.add_parser(
         "select-topic",
@@ -124,6 +191,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     topic_parser.add_argument("task_dir")
     topic_parser.add_argument("--id", required=True, dest="topic_id")
+    topic_parser.add_argument("--workspace")
 
     review_parser = subparsers.add_parser(
         "review-content",
@@ -132,6 +200,7 @@ def build_parser() -> argparse.ArgumentParser:
     review_parser.add_argument("task_dir")
     review_parser.add_argument("--decision", required=True, choices=("approve", "request_changes", "reject"))
     review_parser.add_argument("--feedback")
+    review_parser.add_argument("--workspace")
 
     governance_parser = subparsers.add_parser(
         "prepare-governance",
@@ -139,6 +208,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     governance_parser.add_argument("task_dir")
     governance_parser.add_argument("--profile-id", required=True)
+    governance_parser.add_argument("--workspace")
 
     propose_rule_parser = subparsers.add_parser(
         "propose-governance-rule",
@@ -146,6 +216,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     propose_rule_parser.add_argument("task_dir")
     propose_rule_parser.add_argument("--proposal-id", required=True)
+    propose_rule_parser.add_argument("--workspace")
 
     confirm_rule_parser = subparsers.add_parser(
         "confirm-governance-rule",
@@ -155,6 +226,7 @@ def build_parser() -> argparse.ArgumentParser:
     confirm_rule_parser.add_argument("--proposal-id", required=True)
     confirm_rule_parser.add_argument("--decision", required=True, choices=("confirm", "reject"))
     confirm_rule_parser.add_argument("--note", default="")
+    confirm_rule_parser.add_argument("--workspace")
 
     feedback_rule_parser = subparsers.add_parser(
         "confirm-feedback-rule",
@@ -163,6 +235,7 @@ def build_parser() -> argparse.ArgumentParser:
     feedback_rule_parser.add_argument("task_dir")
     feedback_rule_parser.add_argument("--candidate-id", required=True)
     feedback_rule_parser.add_argument("--decision", required=True, choices=("confirm", "reject", "current_only"))
+    feedback_rule_parser.add_argument("--workspace")
 
     cost_parser = subparsers.add_parser(
         "confirm-external-cost",
@@ -170,12 +243,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cost_parser.add_argument("task_dir")
     cost_parser.add_argument("--decision", required=True, choices=("confirm", "skip"))
+    cost_parser.add_argument("--workspace")
     return parser
 
 
 def main(argv: Iterable[str] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.command is None:
+        try:
+            return interactive.run_start()
+        except (FileNotFoundError, runtime.WorkflowError, OSError) as error:
+            print(str(error), file=sys.stderr)
+            return 1
+
+    root = None
+    if args.command in WORKSPACE_COMMANDS:
+        try:
+            root = workspace_root(getattr(args, "workspace", None))
+        except OSError as error:
+            print(str(error), file=sys.stderr)
+            return 1
 
     if args.command == "validate-project":
         missing = runtime.validate_project(Path.cwd())
@@ -189,7 +278,7 @@ def main(argv: Iterable[str] = None) -> int:
 
     if args.command == "doctor":
         try:
-            messages = runtime.doctor_all(Path.cwd()) if args.all_skills else runtime.doctor(Path.cwd(), args.skill)
+            messages = runtime.doctor_all(root) if args.all_skills else runtime.doctor(root, args.skill)
         except (runtime.WorkflowError, FileNotFoundError) as error:
             print(str(error), file=sys.stderr)
             return 1
@@ -199,19 +288,20 @@ def main(argv: Iterable[str] = None) -> int:
 
     if args.command == "create-task":
         try:
-            task_dir = runtime.create_task(Path.cwd(), args.task_type, args.source_url, args.brief)
+            task_dir = runtime.create_task(root, args.task_type, args.source_url, args.brief)
         except ValueError as error:
             parser.error(str(error))
         except (OSError, runtime.WorkflowError, FileNotFoundError) as error:
             print("Failed to create task: " + str(error))
             return 1
-        print("Created task: " + str(task_dir.relative_to(Path.cwd())))
+        print("Created task: " + str(relative_to_root(task_dir, root)))
         return 0
 
     if args.command == "task-status":
         try:
-            task, state = runtime.read_task_files(Path(args.task_dir))
-            workflows = runtime.load_workflows(Path.cwd() / "workflow.yaml")
+            task_dir = resolve_task_path(root, args.task_dir)
+            task, state = runtime.read_task_files(task_dir)
+            workflows = runtime.load_workflows(root / "workflow.yaml")
         except (FileNotFoundError, runtime.WorkflowError) as error:
             print(str(error), file=sys.stderr)
             return 1
@@ -219,22 +309,23 @@ def main(argv: Iterable[str] = None) -> int:
         return 0
 
     if args.command == "advance":
-        return run_state_command(lambda: runtime.advance_task(Path.cwd(), Path(args.task_dir)), "Advanced task")
+        return run_state_command(lambda: runtime.advance_task(root, resolve_task_path(root, args.task_dir)), "Advanced task")
     if args.command == "resume":
-        return run_state_command(lambda: runtime.resume_task(Path.cwd(), Path(args.task_dir)), "Resumed task")
+        return run_state_command(lambda: runtime.resume_task(root, resolve_task_path(root, args.task_dir)), "Resumed task")
     if args.command == "block":
-        return run_state_command(lambda: runtime.block_task(Path(args.task_dir), args.reason), "Blocked task")
+        return run_state_command(lambda: runtime.block_task(resolve_task_path(root, args.task_dir), args.reason), "Blocked task")
     if args.command == "unblock":
-        return run_state_command(lambda: runtime.unblock_task(Path(args.task_dir)), "Unblocked task")
+        return run_state_command(lambda: runtime.unblock_task(resolve_task_path(root, args.task_dir)), "Unblocked task")
     if args.command == "run":
         if args.technical:
-            return run_state_command(lambda: runtime.run_task(Path.cwd(), Path(args.task_dir)), "Ran stage")
+            return run_state_command(lambda: runtime.run_task(root, resolve_task_path(root, args.task_dir)), "Ran stage")
         try:
-            task_before, state_before = runtime.read_task_files(Path(args.task_dir))
-            workflows = runtime.load_workflows(Path.cwd() / "workflow.yaml")
+            task_dir = resolve_task_path(root, args.task_dir)
+            task_before, state_before = runtime.read_task_files(task_dir)
+            workflows = runtime.load_workflows(root / "workflow.yaml")
             print(presentation.render_stage_intro(task_before, state_before, workflows))
-            state = runtime.run_task(Path.cwd(), Path(args.task_dir))
-            task_after, state_after = runtime.read_task_files(Path(args.task_dir))
+            state = runtime.run_task(root, task_dir)
+            task_after, state_after = runtime.read_task_files(task_dir)
             executed = str(state.get("_executed_stage", state_before.get("current_stage")))
             print()
             print(presentation.render_stage_done(task_after, state_after, executed))
@@ -244,7 +335,7 @@ def main(argv: Iterable[str] = None) -> int:
         return 0
     if args.command == "run-until-gate":
         try:
-            state, messages = runtime.run_until_gate(Path.cwd(), Path(args.task_dir), args.max_steps)
+            state, messages = runtime.run_until_gate(root, resolve_task_path(root, args.task_dir), args.max_steps)
         except (FileNotFoundError, runtime.WorkflowError) as error:
             print(str(error), file=sys.stderr)
             return 1
@@ -258,56 +349,120 @@ def main(argv: Iterable[str] = None) -> int:
         return 0
     if args.command == "start":
         try:
-            return interactive.run_start(Path.cwd())
+            return interactive.run_start(args.workspace, technical=args.technical)
         except (FileNotFoundError, runtime.WorkflowError) as error:
+            print(str(error), file=sys.stderr)
+            return 1
+    if args.command == "configure":
+        try:
+            workspace = workspace_module.bootstrap_workspace(workspace_module.resolve_workspace(args.workspace).base)
+            return interactive.run_configure(workspace)
+        except (FileNotFoundError, runtime.WorkflowError, OSError) as error:
             print(str(error), file=sys.stderr)
             return 1
     if args.command == "setup":
         try:
-            return interactive.run_setup(Path.cwd())
+            workspace = workspace_module.bootstrap_workspace(workspace_module.resolve_workspace(args.workspace).base)
+            return interactive.run_configure(workspace)
         except (FileNotFoundError, runtime.WorkflowError, OSError) as error:
             print(str(error), file=sys.stderr)
             return 1
+    if args.command == "status":
+        try:
+            workspace = workspace_module.bootstrap_workspace(workspace_module.resolve_workspace(args.workspace).base)
+            print(interactive.render_capability_summary(workspace.project_root, technical=args.technical))
+        except (FileNotFoundError, runtime.WorkflowError, OSError) as error:
+            print(str(error), file=sys.stderr)
+            return 1
+        return 0
+    if args.command == "list-tasks":
+        try:
+            workspace = workspace_module.bootstrap_workspace(workspace_module.resolve_workspace(args.workspace).base)
+            tasks = sorted(workspace.tasks_dir.glob("task-*"), key=lambda path: path.stat().st_mtime, reverse=True)
+            print("最近任务：")
+            if not tasks:
+                print("暂无任务")
+            for index, task_dir in enumerate(tasks[:20], 1):
+                task, state = runtime.read_task_files(task_dir)
+                print("%s. %s · %s · %s · %s" % (index, presentation.task_name(task.get("task_type")), presentation.user_stage_name(task.get("task_type"), state.get("current_stage")), state.get("status"), task_dir))
+        except (FileNotFoundError, runtime.WorkflowError, OSError) as error:
+            print(str(error), file=sys.stderr)
+            return 1
+        return 0
+    if args.command == "show-result":
+        try:
+            task_dir = resolve_task_path(root, args.task_dir)
+            task, state = runtime.read_task_files(task_dir)
+            print(presentation.render_completion_summary(task_dir, task, state))
+        except (FileNotFoundError, runtime.WorkflowError, OSError) as error:
+            print(str(error), file=sys.stderr)
+            return 1
+        return 0
     if args.command == "import-hot-learning-analysis":
         return run_state_command(
-            lambda: runtime.import_hot_learning_analysis(Path.cwd(), Path(args.task_dir), Path(args.markdown)),
+            lambda: runtime.import_hot_learning_analysis(root, resolve_task_path(root, args.task_dir), Path(args.markdown)),
             "Imported Hot Learning analysis",
         )
     if args.command == "select-samples":
-        return run_state_command(lambda: runtime.select_samples(Path.cwd(), Path(args.task_dir), args.ids), "Selected samples")
+        return run_state_command(lambda: runtime.select_samples(root, resolve_task_path(root, args.task_dir), args.ids), "Selected samples")
     if args.command == "set-generation-brief":
-        return run_state_command(lambda: runtime.set_generation_brief(Path(args.task_dir), args.brief), "Set generation brief")
+        return run_state_command(lambda: runtime.set_generation_brief(resolve_task_path(root, args.task_dir), args.brief), "Set generation brief")
     if args.command == "attach-learning":
-        return run_state_command(lambda: runtime.attach_learning_source(Path.cwd(), Path(args.task_dir), Path(args.source_task_dir)), "Attached learning")
+        return run_state_command(lambda: runtime.attach_learning_source(root, resolve_task_path(root, args.task_dir), resolve_task_path(root, args.source_task_dir)), "Attached learning")
     if args.command == "select-topic":
-        return run_state_command(lambda: runtime.select_topic(Path.cwd(), Path(args.task_dir), args.topic_id), "Selected topic")
+        return run_state_command(lambda: runtime.select_topic(root, resolve_task_path(root, args.task_dir), args.topic_id), "Selected topic")
     if args.command == "review-content":
-        return run_state_command(lambda: runtime.review_content(Path.cwd(), Path(args.task_dir), args.decision, args.feedback), "Reviewed content")
+        return run_state_command(lambda: runtime.review_content(root, resolve_task_path(root, args.task_dir), args.decision, args.feedback), "Reviewed content")
     if args.command == "prepare-governance":
-        return run_state_command(lambda: runtime.prepare_governance(Path.cwd(), Path(args.task_dir), args.profile_id), "Prepared governance")
+        return run_state_command(lambda: runtime.prepare_governance(root, resolve_task_path(root, args.task_dir), args.profile_id), "Prepared governance")
     if args.command == "propose-governance-rule":
         return run_state_command(
-            lambda: runtime.propose_governance_rule(Path.cwd(), Path(args.task_dir), args.proposal_id),
+            lambda: runtime.propose_governance_rule(root, resolve_task_path(root, args.task_dir), args.proposal_id),
             "Proposed governance rule",
         )
     if args.command == "confirm-governance-rule":
         return run_state_command(
-            lambda: runtime.confirm_governance_rule(Path.cwd(), Path(args.task_dir), args.proposal_id, args.decision, args.note),
+            lambda: runtime.confirm_governance_rule(root, resolve_task_path(root, args.task_dir), args.proposal_id, args.decision, args.note),
             "Confirmed governance rule",
         )
     if args.command == "confirm-feedback-rule":
         return run_state_command(
-            lambda: runtime.confirm_feedback_rule(Path(args.task_dir), args.candidate_id, args.decision),
+            lambda: runtime.confirm_feedback_rule(resolve_task_path(root, args.task_dir), args.candidate_id, args.decision),
             "Confirmed feedback rule",
         )
     if args.command == "confirm-external-cost":
         return run_state_command(
-            lambda: runtime.confirm_external_cost(Path(args.task_dir), args.decision),
+            lambda: runtime.confirm_external_cost(resolve_task_path(root, args.task_dir), args.decision),
             "Confirmed external cost",
         )
 
     parser.print_help()
     return 0
+
+
+def workspace_root(explicit_workspace: str = None) -> Path:
+    if explicit_workspace is None and not workspace_module.workspace_env_present() and is_source_project_root(Path.cwd()):
+        return Path.cwd()
+    workspace = workspace_module.bootstrap_workspace(workspace_module.resolve_workspace(explicit_workspace).base)
+    return workspace.project_root
+
+
+def is_source_project_root(path: Path) -> bool:
+    return (path / "workflow.yaml").is_file()
+
+
+def resolve_task_path(root: Path, task_dir: str) -> Path:
+    path = Path(task_dir).expanduser()
+    if path.is_absolute():
+        return path
+    return root / path
+
+
+def relative_to_root(path: Path, root: Path) -> Path:
+    try:
+        return path.relative_to(root)
+    except ValueError:
+        return path
 
 
 def run_state_command(action, label: str) -> int:
